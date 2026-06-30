@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
 import { Download, Sparkles, Plus, Minus, CheckCircle, Flame, Eye, ArrowRight, ShieldCheck, Heart, Info } from 'lucide-react';
+import DownloadButton from './DownloadButton';
 
 interface MockSubject {
   name: string;
@@ -90,15 +91,12 @@ export default function Hero() {
             transition={{ duration: 0.6, delay: 0.3 }}
             className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-10"
           >
-            <a
-              href="https://github.com/samir74242/AttendEz/releases/download/v1.0.0/AttendEz.apk"
-              target="_blank"
-              rel="noopener noreferrer"
+            <DownloadButton
               className="flex items-center justify-center gap-2.5 px-8 py-4 rounded-2xl bg-brand-primary text-white font-bold shadow-xl shadow-brand-primary/30 hover:bg-brand-primary/95 hover:-translate-y-0.5 hover:shadow-2xl transition-all"
             >
               <Download className="w-5 h-5" />
               <span>Download APK (20MB)</span>
-            </a>
+            </DownloadButton>
             <a
               href="#features"
               className="flex items-center justify-center gap-2 px-8 py-4 rounded-2xl bg-white border border-brand-border hover:border-brand-primary text-brand-primary-text hover:text-brand-primary font-bold shadow-sm hover:bg-brand-bg transition-all"

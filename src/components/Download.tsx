@@ -1,5 +1,6 @@
 import { motion } from 'motion/react';
 import { Download, Sparkles, Smartphone, CheckCircle, ShieldCheck, Zap } from 'lucide-react';
+import DownloadButton from './DownloadButton';
 
 export default function DownloadSection() {
   return (
@@ -63,15 +64,12 @@ export default function DownloadSection() {
 
             {/* CTAs */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
-              <a
-                href="https://github.com/samir74242/AttendEz/releases/download/v1.0.0/AttendEz.apk"
-                target="_blank"
-                rel="noopener noreferrer"
+              <DownloadButton
                 className="flex items-center justify-center gap-2.5 px-8 py-4 rounded-2xl bg-brand-primary text-white font-extrabold shadow-xl shadow-brand-primary/30 hover:bg-brand-primary/90 hover:-translate-y-0.5 transition-all group"
               >
                 <Download className="w-5 h-5 group-hover:animate-bounce" />
                 <span>Download APK (v2.0)</span>
-              </a>
+              </DownloadButton>
             </div>
           </div>
 

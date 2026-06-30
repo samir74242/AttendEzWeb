@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Download, Menu, X } from 'lucide-react';
 import Logo from './Logo';
+import DownloadButton from './DownloadButton';
 
 export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -68,13 +69,12 @@ export default function Navbar() {
 
           {/* Desktop CTAs */}
           <div className="hidden md:flex items-center gap-4">
-            <a
-              href="#download"
+            <DownloadButton
               className="relative inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-brand-primary text-white text-sm font-semibold shadow-lg shadow-brand-primary/25 hover:bg-brand-primary/90 hover:-translate-y-0.5 transition-all"
             >
               <Download className="w-4 h-4" />
               <span>Download App</span>
-            </a>
+            </DownloadButton>
           </div>
 
           {/* Mobile Toggle */}
@@ -111,14 +111,13 @@ export default function Navbar() {
               </div>
 
               <div className="flex flex-col gap-3">
-                <a
-                  href="#download"
+                <DownloadButton
                   onClick={() => setIsMobileMenuOpen(false)}
                   className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-brand-primary text-white font-semibold shadow-lg shadow-brand-primary/10 hover:bg-brand-primary/90 transition-all"
                 >
                   <Download className="w-4 h-4" />
                   <span>Download App</span>
-                </a>
+                </DownloadButton>
               </div>
             </motion.div>
           )}
