@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Download, Menu, X, CheckSquare } from 'lucide-react';
+import { Download, Menu, X } from 'lucide-react';
+import Logo from './Logo';
 
 export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -48,17 +49,7 @@ export default function Navbar() {
         <div className="max-w-7xl mx-auto px-6 flex items-center justify-between">
           {/* Logo */}
           <a href="#" className="flex items-center gap-2.5 group">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center text-white shadow-lg shadow-brand-primary/20 group-hover:scale-105 transition-transform">
-              <CheckSquare className="w-5.5 h-5.5" />
-            </div>
-            <div className="flex flex-col">
-              <span className="font-display text-xl font-bold tracking-tight text-brand-primary-text">
-                Attend<span className="text-brand-primary">Ez</span>
-              </span>
-              <span className="text-[9px] font-mono tracking-widest text-brand-secondary uppercase -mt-1">
-                STUDENT UTILITY
-              </span>
-            </div>
+            <Logo size={42} showText={true} />
           </a>
 
           {/* Desktop Links */}

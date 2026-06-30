@@ -1,4 +1,5 @@
-import { CheckSquare, Twitter, Mail, HelpCircle, Heart } from 'lucide-react';
+import { Twitter, Mail, HelpCircle, Heart } from 'lucide-react';
+import Logo from './Logo';
 
 export default function Footer() {
   const currentYear = new Date().getFullYear();
@@ -16,17 +17,7 @@ export default function Footer() {
           {/* Brand Info */}
           <div className="md:col-span-6 flex flex-col items-start text-left">
             <a href="#" className="flex items-center gap-2.5 group mb-5">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center text-white shadow-lg shadow-brand-primary/20 group-hover:scale-105 transition-transform">
-                <CheckSquare className="w-5.5 h-5.5" />
-              </div>
-              <div className="flex flex-col">
-                <span className="font-display text-xl font-bold tracking-tight text-white">
-                  Attend<span className="text-brand-accent">Ez</span>
-                </span>
-                <span className="text-[9px] font-mono tracking-widest text-brand-secondary uppercase -mt-1">
-                  STUDENT UTILITY
-                </span>
-              </div>
+              <Logo size={42} showText={true} textClassName="text-xl text-white" />
             </a>
             <p className="text-xs sm:text-sm text-white/50 max-w-sm leading-relaxed mb-6">
               Track Easily. Attend Smartly. AttendEz helps students effortlessly log attendance, manage daily calendars, calculate thresholds, and protect study schedules with clean local privacy.
