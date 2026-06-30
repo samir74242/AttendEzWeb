@@ -1,0 +1,3 @@
+console.log("AUTHORIZED_SERVICE_ACCOUNT_EMAIL:", process.env.AUTHORIZED_SERVICE_ACCOUNT_EMAIL);
+console.log("GOOGLE_CLOUD_PROJECT:", process.env.GOOGLE_CLOUD_PROJECT);
+console.log("PROJECT_ID:", process.env.PROJECT_ID);

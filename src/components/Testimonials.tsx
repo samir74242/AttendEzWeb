@@ -107,6 +107,8 @@ export default function Testimonials() {
   const [hoverRating, setHoverRating] = useState<number | null>(null);
   const [captchaChallenge, setCaptchaChallenge] = useState<{ id: string; question: string } | null>(null);
   const [captchaAnswer, setCaptchaAnswer] = useState('');
+  const [isCaptchaLoading, setIsCaptchaLoading] = useState(false);
+  const [captchaError, setCaptchaError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [successDialog, setSuccessDialog] = useState<{ isOpen: boolean; message: string; isPrivate: boolean }>({
@@ -122,6 +124,32 @@ export default function Testimonials() {
   const [adminAuthError, setAdminAuthError] = useState('');
   const [adminReviews, setAdminReviews] = useState<Review[]>([]);
   const [isLoadingAdmin, setIsLoadingAdmin] = useState(false);
+
+  // Combined active user
+  const effectiveUser = customUser || currentUser;
+
+  // Form Step State
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
+
+  // Sync currentStep with auth state: if user logs in, advance to step 2; if user logs out, go back to step 1
+  useEffect(() => {
+    if (activeTab === 'write') {
+      if (effectiveUser) {
+        if (currentStep === 1) {
+          setCurrentStep(2);
+        }
+      } else {
+        setCurrentStep(1);
+      }
+    }
+  }, [effectiveUser, activeTab]);
+
+  // Always fetch a fresh captcha when arriving at Step 3
+  useEffect(() => {
+    if (currentStep === 3) {
+      fetchCaptcha();
+    }
+  }, [currentStep]);
   
   // Admin Filter / Search States
   const [adminSearch, setAdminSearch] = useState('');
@@ -129,9 +157,6 @@ export default function Testimonials() {
   const [adminRatingFilter, setAdminRatingFilter] = useState<string>('All');
   const [adminVisibilityFilter, setAdminVisibilityFilter] = useState<string>('All');
   const [adminSortBy, setAdminSortBy] = useState<string>('newest');
-
-  // Combined active user
-  const effectiveUser = customUser || currentUser;
 
   // Listen to Auth State Changes
   useEffect(() => {
@@ -208,6 +233,8 @@ export default function Testimonials() {
         name: '',
         email: ''
       }));
+      setCaptchaAnswer('');
+      setCurrentStep(1);
     } catch (err) {
       console.error("Sign-out error:", err);
     }
@@ -237,16 +264,32 @@ export default function Testimonials() {
     }
   };
 
-  // Fetch Captcha challenge
-  const fetchCaptcha = async () => {
+  // Fetch Captcha challenge with automatic retries and exponential backoff
+  const fetchCaptcha = async (opts?: { retriesLeft?: number; delay?: number }) => {
+    const retriesLeft = typeof opts?.retriesLeft === 'number' ? opts.retriesLeft : 5;
+    const delay = typeof opts?.delay === 'number' ? opts.delay : 1000;
+    
+    setIsCaptchaLoading(true);
+    setCaptchaError(null);
     try {
       const res = await fetch('/api/captcha');
       if (res.ok) {
         const data = await res.json();
         setCaptchaChallenge(data);
+        setIsCaptchaLoading(false);
+      } else {
+        throw new Error(`Server returned status ${res.status}`);
       }
     } catch (err) {
-      console.error("Error fetching captcha:", err);
+      console.warn(`Error fetching captcha (${retriesLeft} retries left):`, err);
+      if (retriesLeft > 0) {
+        setTimeout(() => {
+          fetchCaptcha({ retriesLeft: retriesLeft - 1, delay: delay * 2 });
+        }, delay);
+      } else {
+        setCaptchaError("Unable to establish secure connection with security service. Please try again.");
+        setIsCaptchaLoading(false);
+      }
     }
   };
 
@@ -254,6 +297,13 @@ export default function Testimonials() {
     fetchPublicReviews();
     fetchCaptcha();
   }, []);
+
+  // Fetch a fresh captcha as soon as the user logs in
+  useEffect(() => {
+    if (effectiveUser) {
+      fetchCaptcha();
+    }
+  }, [effectiveUser]);
 
   // Submit Review Handler
   const handleFormSubmit = async (e: React.FormEvent) => {
@@ -321,6 +371,43 @@ export default function Testimonials() {
       const data = await res.json();
 
       if (res.ok) {
+        // Validation succeeded on server. Now write the review document directly to Firestore from the client.
+        const finalReviewDoc = {
+          id: data.reviewId,
+          reviewerName: (formData.name && formData.name.trim()) || effectiveUser.displayName || "Google User",
+          college: formData.college ? formData.college.trim() : "",
+          email: effectiveUser.email,
+          rating: Number(formData.rating),
+          title: formData.title ? formData.title.trim() : "",
+          review: formData.review.trim(),
+          visibility: formData.visibility === 'private' ? 'private' : 'public',
+          status: formData.visibility === 'private' ? 'Private Feedback' : 'Pending',
+          createdAt: data.submissionDate,
+          updatedAt: data.submissionDate,
+          appVersion: 'v2.0',
+          browser: detectBrowser(),
+          operatingSystem: detectOS(),
+          device: detectDevice(),
+          ipHash: data.ipHash,
+          userId: effectiveUser.uid
+        };
+
+        // Write directly to Firestore using client-side SDK
+        await setDoc(doc(db, 'reviews', data.reviewId), finalReviewDoc);
+
+        // Notify server to send email (fire-and-forget / non-blocking)
+        try {
+          await fetch('/api/reviews/notify', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ reviewDoc: finalReviewDoc, firebaseToken: token })
+          });
+        } catch (notifyErr) {
+          console.warn("Non-blocking email notification dispatch failed:", notifyErr);
+        }
+
         // Success dialog
         setSuccessDialog({
           isOpen: true,
@@ -339,6 +426,7 @@ export default function Testimonials() {
           visibility: 'public'
         });
         setCaptchaAnswer('');
+        setCurrentStep(2);
         fetchCaptcha();
         fetchPublicReviews(); // refresh listing in real-time
       } else {
@@ -689,26 +777,124 @@ export default function Testimonials() {
           </div>
         )}
 
-        {/* Tab 2: Write/Share Review Form */}
+        {/* Tab 2: Write/Share Review Form Redesigned as a Premium 3-Step Wizard */}
         {activeTab === 'write' && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="max-w-2xl mx-auto bg-white border border-brand-border/40 rounded-3xl p-8 sm:p-10 shadow-lg relative"
+            className="max-w-2xl mx-auto bg-white border border-brand-border/40 rounded-3xl p-8 sm:p-10 shadow-lg relative overflow-hidden"
           >
             <div className="absolute top-6 right-6 text-brand-primary/5">
               <Sparkles className="w-16 h-16" />
             </div>
 
-            <h3 className="text-xl font-bold text-brand-primary-text mb-2 text-left">Write a Review</h3>
-            <p className="text-xs text-brand-secondary-text mb-8 text-left">
-              Share your honest feedback. Your review helps other students decide to try AttendEz and helps us improve!
+            <h3 className="text-xl font-extrabold text-brand-primary-text mb-1 text-left flex items-center gap-2">
+              <span>Write a Review</span>
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-brand-primary/10 text-brand-primary font-mono">
+                v2.0
+              </span>
+            </h3>
+            <p className="text-xs text-brand-secondary-text mb-6 text-left">
+              Share your honest feedback. Your review helps other students and drives our development!
             </p>
 
-            {!effectiveUser ? (
-              <div className="py-6 space-y-6">
-                {/* Switcher Tabs */}
-                <div className="flex bg-brand-bg p-1 rounded-xl max-w-sm mx-auto border border-brand-border/40 gap-1">
+            {/* Step Progress Indicator Bar */}
+            <div className="mb-8 border-b border-brand-border/30 pb-6">
+              <div className="flex items-center justify-between max-w-md mx-auto">
+                {/* Step 1 */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (currentStep > 1 && !effectiveUser) {
+                      setCurrentStep(1);
+                      setSubmitError('');
+                    }
+                  }}
+                  disabled={!!effectiveUser}
+                  className="flex flex-col items-center gap-1.5 focus:outline-none group disabled:cursor-not-allowed"
+                >
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center border text-xs font-bold transition-all ${
+                    effectiveUser
+                      ? 'bg-brand-success/15 border-brand-success text-brand-success'
+                      : currentStep === 1
+                      ? 'bg-brand-primary text-white border-brand-primary shadow-md shadow-brand-primary/15 scale-110'
+                      : 'bg-brand-bg text-brand-secondary-text border-brand-border'
+                  }`}>
+                    {effectiveUser ? <ShieldCheck className="w-4 h-4" /> : '1'}
+                  </div>
+                  <span className={`text-[10px] font-bold tracking-wider uppercase transition-colors ${
+                    currentStep === 1 ? 'text-brand-primary' : 'text-brand-secondary-text/80'
+                  }`}>
+                    Verify
+                  </span>
+                </button>
+
+                {/* Line */}
+                <div className={`flex-1 h-0.5 mx-2 -mt-4 transition-all ${
+                  currentStep >= 2 || effectiveUser ? 'bg-brand-primary/40' : 'bg-brand-border/40'
+                }`} />
+
+                {/* Step 2 */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (effectiveUser && currentStep > 2) {
+                      setCurrentStep(2);
+                      setSubmitError('');
+                    }
+                  }}
+                  disabled={!effectiveUser}
+                  className="flex flex-col items-center gap-1.5 focus:outline-none group disabled:opacity-50"
+                >
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center border text-xs font-bold transition-all ${
+                    currentStep === 2
+                      ? 'bg-brand-primary text-white border-brand-primary shadow-md shadow-brand-primary/15 scale-110'
+                      : currentStep > 2
+                      ? 'bg-brand-success/15 border-brand-success text-brand-success'
+                      : 'bg-brand-bg text-brand-secondary-text border-brand-border'
+                  }`}>
+                    {currentStep > 2 ? <CheckCircle className="w-4 h-4" /> : '2'}
+                  </div>
+                  <span className={`text-[10px] font-bold tracking-wider uppercase transition-colors ${
+                    currentStep === 2 ? 'text-brand-primary' : 'text-brand-secondary-text/80'
+                  }`}>
+                    Feedback
+                  </span>
+                </button>
+
+                {/* Line */}
+                <div className={`flex-1 h-0.5 mx-2 -mt-4 transition-all ${
+                  currentStep === 3 ? 'bg-brand-primary/40' : 'bg-brand-border/40'
+                }`} />
+
+                {/* Step 3 */}
+                <div className="flex flex-col items-center gap-1.5">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center border text-xs font-bold transition-all ${
+                    currentStep === 3
+                      ? 'bg-brand-primary text-white border-brand-primary shadow-md shadow-brand-primary/15 scale-110'
+                      : 'bg-brand-bg text-brand-secondary-text border-brand-border'
+                  }`}>
+                    3
+                  </div>
+                  <span className={`text-[10px] font-bold tracking-wider uppercase transition-colors ${
+                    currentStep === 3 ? 'text-brand-primary' : 'text-brand-secondary-text/80'
+                  }`}>
+                    Anti-Spam
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* STEP 1: VERIFICATION / IDENTIFICATION PANEL */}
+            {currentStep === 1 && !effectiveUser && (
+              <motion.div 
+                initial={{ opacity: 0, x: -15 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 15 }}
+                className="py-4 space-y-6"
+              >
+                {/* Mode Selector Tab Swapper */}
+                <div className="flex bg-brand-bg p-1 rounded-xl max-w-sm mx-auto border border-brand-border/40 gap-1 mb-2">
                   <button
                     type="button"
                     onClick={() => { setReviewLoginTab('direct_email'); setSubmitError(''); }}
@@ -734,11 +920,12 @@ export default function Testimonials() {
                 </div>
 
                 {reviewLoginTab === 'direct_email' ? (
-                  <form onSubmit={handleBypassSignIn} className="max-w-md mx-auto space-y-4 text-left p-5 border border-brand-border/40 rounded-2xl bg-brand-bg/5 shadow-sm">
-                    <h4 className="text-sm font-black text-brand-primary-text mb-1 uppercase tracking-wider text-center">Quick Email Sign-In</h4>
+                  <form onSubmit={handleBypassSignIn} className="max-w-md mx-auto space-y-4 text-left p-6 border border-brand-border/40 rounded-2xl bg-brand-bg/5 shadow-sm">
+                    <h4 className="text-xs font-black text-brand-primary-text mb-1 uppercase tracking-wider text-center">Quick Email Sign-In</h4>
                     <p className="text-[10px] text-brand-secondary-text leading-relaxed mb-4 text-center">
-                      Type your email and your name to immediately sign in and submit your review. No popups or authorization domains required!
+                      Type your email and your name to immediately sign in and write your review. No popups or authorization domains required!
                     </p>
+                    
                     <div>
                       <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
                         Email Address <span className="text-red-500">*</span>
@@ -774,18 +961,18 @@ export default function Testimonials() {
 
                     <button
                       type="submit"
-                      className="w-full py-3 mt-2 rounded-xl bg-brand-primary text-white font-bold text-xs shadow-md hover:bg-brand-primary/95 hover:shadow-brand-primary/15 transition-all flex items-center justify-center gap-2"
+                      className="w-full py-3.5 mt-2 rounded-xl bg-brand-primary text-white font-extrabold text-xs shadow-md hover:bg-brand-primary/95 hover:shadow-brand-primary/15 transition-all flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Unlock className="w-3.5 h-3.5" />
                       <span>Instantly Sign In & Continue</span>
                     </button>
                   </form>
                 ) : (
-                  <div className="text-center space-y-5">
+                  <div className="text-center space-y-5 max-w-md mx-auto p-6 border border-brand-border/40 rounded-2xl bg-brand-bg/5 shadow-sm">
                     <div className="w-12 h-12 bg-brand-primary/5 text-brand-primary rounded-full flex items-center justify-center mx-auto border border-brand-primary/15 shadow-inner">
                       <ShieldCheck className="w-6 h-6" />
                     </div>
-                    <div className="max-w-md mx-auto space-y-2">
+                    <div className="space-y-2">
                       <h4 className="text-base font-bold text-brand-primary-text">Google Sign-In</h4>
                       <p className="text-xs text-brand-secondary-text leading-relaxed">
                         Sign in with your Google Account to authorize and submit your review.
@@ -800,7 +987,7 @@ export default function Testimonials() {
                         type="button"
                         onClick={handleGoogleSignIn}
                         disabled={isAuthLoading}
-                        className="mx-auto flex items-center gap-3 px-6 py-3 rounded-xl border border-brand-border bg-white hover:bg-brand-bg text-brand-primary-text text-xs font-bold shadow-sm hover:shadow transition-all duration-200 active:scale-95 focus:outline-none"
+                        className="mx-auto flex items-center gap-3 px-6 py-3 rounded-xl border border-brand-border bg-white hover:bg-brand-bg text-brand-primary-text text-xs font-bold shadow-sm hover:shadow transition-all duration-200 active:scale-95 focus:outline-none cursor-pointer"
                       >
                         <svg className="w-4 h-4" viewBox="0 0 24 24">
                           <path
@@ -823,6 +1010,16 @@ export default function Testimonials() {
                         {isAuthLoading ? 'Connecting...' : 'Sign in with Google'}
                       </button>
                     </div>
+
+                    <div className="pt-2 text-left bg-blue-50/50 p-3.5 rounded-xl border border-blue-100 space-y-1.5 text-[10px] text-blue-700 leading-relaxed">
+                      <p className="font-extrabold flex items-center gap-1">
+                        <Lock className="w-3 h-3" />
+                        Firebase Domain Auth Helper:
+                      </p>
+                      <p>
+                        Google login requires the domain to be registered in Firebase. If you encounter an "unauthorized domain" error, please add your domain (e.g. <strong>attendez-web.vercel.app</strong>) in Firebase Authentication Settings. Alternatively, use <strong>Direct Email ID</strong> for a fast and flawless experience!
+                      </p>
+                    </div>
                   </div>
                 )}
 
@@ -832,11 +1029,18 @@ export default function Testimonials() {
                     <p>{submitError}</p>
                   </div>
                 )}
-              </div>
-            ) : (
-              <form onSubmit={handleFormSubmit} className="space-y-6 text-left">
-                {/* Authenticated user banner */}
-                <div className="flex items-center justify-between p-4 bg-brand-primary/5 border border-brand-primary/10 rounded-2xl mb-6">
+              </motion.div>
+            )}
+
+            {/* STEP 2: FEEDBACK DETAIL INPUT PANEL */}
+            {currentStep === 2 && effectiveUser && (
+              <motion.div 
+                initial={{ opacity: 0, x: 15 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="space-y-6 text-left"
+              >
+                {/* Authenticated user card bar */}
+                <div className="flex items-center justify-between p-4 bg-brand-primary/5 border border-brand-primary/10 rounded-2xl mb-4">
                   <div className="flex items-center gap-3">
                     {effectiveUser.photoURL ? (
                       <img 
@@ -851,14 +1055,19 @@ export default function Testimonials() {
                       </div>
                     )}
                     <div>
-                      <p className="text-xs font-bold text-brand-primary-text">{effectiveUser.displayName || 'Student'}</p>
+                      <p className="text-xs font-bold text-brand-primary-text flex items-center gap-1.5">
+                        <span>{effectiveUser.displayName || 'Verified User'}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[8px] bg-brand-success/10 text-brand-success font-extrabold">
+                          Verified
+                        </span>
+                      </p>
                       <p className="text-[10px] text-brand-secondary-text">{effectiveUser.email}</p>
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={handleSignOut}
-                    className="text-[10px] font-bold text-red-500 hover:text-red-600 underline focus:outline-none"
+                    className="text-[10px] font-bold text-red-500 hover:text-red-600 underline focus:outline-none cursor-pointer"
                   >
                     Sign Out
                   </button>
@@ -894,35 +1103,12 @@ export default function Testimonials() {
                   </div>
                 </div>
 
-                {/* Email Input with verified badge details */}
-                <div>
-                  <label className="block text-xs font-bold text-brand-primary-text uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    Email Address <span className="text-brand-success text-[10px] lowercase font-normal flex items-center gap-0.5">
-                      <ShieldCheck className="w-3.5 h-3.5" /> verified via {effectiveUser.isBypass ? 'Direct Email' : 'Google'}
-                    </span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="email"
-                      value={effectiveUser.email || ''}
-                      disabled
-                      className="w-full px-4 py-3 pl-10 rounded-xl border border-brand-border bg-brand-bg/40 text-brand-secondary-text text-sm cursor-not-allowed"
-                    />
-                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-brand-secondary-text/60">
-                      <Lock className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-brand-secondary-text/70 mt-1.5 flex items-center gap-1">
-                    Your verified email is strictly confidential and is never displayed publicly on our website.
-                  </p>
-                </div>
-
-                {/* Interactive Star Rating Selector */}
+                {/* Star rating selector */}
                 <div>
                   <label className="block text-xs font-bold text-brand-primary-text uppercase tracking-wider mb-2">
                     Overall Rating <span className="text-red-500">*</span>
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 bg-brand-bg/50 p-3 rounded-xl border border-brand-border/40 w-fit">
                     {[1, 2, 3, 4, 5].map((star) => (
                       <button
                         key={star}
@@ -930,23 +1116,23 @@ export default function Testimonials() {
                         onClick={() => setFormData({ ...formData, rating: star })}
                         onMouseEnter={() => setHoverRating(star)}
                         onMouseLeave={() => setHoverRating(null)}
-                        className="p-1 rounded-lg hover:bg-brand-bg transition-colors focus:outline-none"
+                        className="p-1 rounded-lg hover:bg-white transition-all focus:outline-none cursor-pointer"
                       >
                         <Star
                           className={`w-7 h-7 transition-all ${
                             star <= (hoverRating ?? formData.rating)
                               ? 'fill-brand-warning text-brand-warning scale-110'
-                              : 'text-brand-border fill-brand-bg'
+                              : 'text-brand-border fill-transparent'
                           }`}
                         />
                       </button>
                     ))}
-                    <span className="text-xs font-semibold text-brand-secondary-text ml-2">
-                      {formData.rating === 5 && '😍 Loved it! Excellent'}
-                      {formData.rating === 4 && '😊 Great experience'}
-                      {formData.rating === 3 && '😐 Average/Decent'}
-                      {formData.rating === 2 && '🙁 Needs improvement'}
-                      {formData.rating === 1 && '💩 Poor experience'}
+                    <span className="text-xs font-extrabold text-brand-primary-text ml-3 shrink-0 font-mono">
+                      {formData.rating === 5 && '😍 Excellent!'}
+                      {formData.rating === 4 && '😊 Great'}
+                      {formData.rating === 3 && '😐 Decent'}
+                      {formData.rating === 2 && '🙁 Poor'}
+                      {formData.rating === 1 && '💩 Terrible'}
                     </span>
                   </div>
                 </div>
@@ -979,7 +1165,7 @@ export default function Testimonials() {
                   <textarea
                     value={formData.review}
                     onChange={(e) => setFormData({ ...formData, review: e.target.value })}
-                    placeholder="Write your constructive review or detailed private feedback here... What do you like most about AttendEz? What should we fix?"
+                    placeholder="Write your review or feedback here... What do you like most about AttendEz? What should we improve?"
                     maxLength={2000}
                     rows={4}
                     required
@@ -990,7 +1176,7 @@ export default function Testimonials() {
                 {/* Privacy/Visibility Options Selector */}
                 <div>
                   <label className="block text-xs font-bold text-brand-primary-text uppercase tracking-wider mb-3">
-                    Review Destination / Visibility <span className="text-red-500">*</span>
+                    Review Destination & Visibility <span className="text-red-500">*</span>
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {/* Option 1: Publish Publicly */}
@@ -998,7 +1184,7 @@ export default function Testimonials() {
                       className={`p-4 rounded-2xl border cursor-pointer flex flex-col justify-between transition-all ${
                         formData.visibility === 'public'
                           ? 'border-brand-primary bg-brand-primary/5 shadow-inner'
-                          : 'border-brand-border hover:border-brand-secondary-text'
+                          : 'border-brand-border hover:border-brand-secondary-text bg-white'
                       }`}
                     >
                       <input
@@ -1010,11 +1196,11 @@ export default function Testimonials() {
                         className="sr-only"
                       />
                       <div className="flex items-center gap-2 mb-2">
-                        <span className="text-lg">🌍</span>
+                        <span className="text-base">🌍</span>
                         <span className="text-xs font-extrabold text-brand-primary-text">Publish Publicly</span>
                       </div>
                       <p className="text-[10px] text-brand-secondary-text leading-relaxed">
-                        "I'd like my review to be considered for publication on the AttendEz website." (Saves as pending approval, published only after review)
+                        Consider my review for publication on the landing page (Requires admin moderation before showing up publicly).
                       </p>
                     </label>
 
@@ -1023,7 +1209,7 @@ export default function Testimonials() {
                       className={`p-4 rounded-2xl border cursor-pointer flex flex-col justify-between transition-all ${
                         formData.visibility === 'private'
                           ? 'border-brand-primary bg-brand-primary/5 shadow-inner'
-                          : 'border-brand-border hover:border-brand-secondary-text'
+                          : 'border-brand-border hover:border-brand-secondary-text bg-white'
                       }`}
                     >
                       <input
@@ -1035,47 +1221,16 @@ export default function Testimonials() {
                         className="sr-only"
                       />
                       <div className="flex items-center gap-2 mb-2">
-                        <span className="text-lg">🔒</span>
-                        <span className="text-xs font-extrabold text-brand-primary-text">Send Only to Developer</span>
+                        <span className="text-base">🔒</span>
+                        <span className="text-xs font-extrabold text-brand-primary-text">Send Privately to Dev</span>
                       </div>
                       <p className="text-[10px] text-brand-secondary-text leading-relaxed">
-                        "This feedback is private and should only be seen by the developer." (Will never appear publicly on the landing page)
+                        This feedback is strictly private and should only be read by the developers (Will never be published).
                       </p>
                     </label>
                   </div>
                 </div>
 
-                {/* Dynamic Bot Protection CAPTCHA challenge */}
-                {captchaChallenge && (
-                  <div className="p-4 rounded-2xl bg-brand-bg border border-brand-border/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="flex items-center gap-2.5">
-                      <span className="p-1.5 rounded-lg bg-brand-primary/10 text-brand-primary text-xs shrink-0 font-mono">
-                        🤖 Security Challenge
-                      </span>
-                      <span className="text-sm font-bold text-brand-primary-text">{captchaChallenge.question}</span>
-                    </div>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        required
-                        value={captchaAnswer}
-                        onChange={(e) => setCaptchaAnswer(e.target.value)}
-                        placeholder="Answer"
-                        className="w-24 px-3 py-2 rounded-xl border border-brand-border bg-white text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/50 text-center font-bold"
-                      />
-                      <button
-                        type="button"
-                        onClick={fetchCaptcha}
-                        className="p-2 rounded-xl border border-brand-border bg-white hover:bg-brand-bg text-brand-secondary-text transition-colors"
-                        title="Reload Challenge"
-                      >
-                        <RefreshCw className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Error Warning */}
                 {submitError && (
                   <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-medium flex items-start gap-2.5">
                     <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -1083,21 +1238,142 @@ export default function Testimonials() {
                   </div>
                 )}
 
-                {/* Submit Button */}
+                {/* Continue Action Button */}
                 <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="w-full py-4 rounded-2xl bg-brand-primary text-white font-extrabold text-sm shadow-lg shadow-brand-primary/25 hover:bg-brand-primary/95 disabled:bg-brand-secondary-text/30 disabled:shadow-none hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setSubmitError('');
+                    if (!formData.review.trim()) {
+                      setSubmitError('Please write your detailed review text before proceeding.');
+                      return;
+                    }
+                    setCurrentStep(3);
+                  }}
+                  className="w-full py-4 rounded-2xl bg-brand-primary text-white font-extrabold text-sm shadow-md hover:bg-brand-primary/95 hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  {isSubmitting ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Submitting Your Review...</span>
-                    </>
-                  ) : (
-                    <span>Submit Feedback</span>
-                  )}
+                  <span>Proceed to Security Verification</span>
+                  <ChevronRight className="w-4 h-4" />
                 </button>
+              </motion.div>
+            )}
+
+            {/* STEP 3: SECURITY CHALLENGE & FINAL SUBMIT PANEL */}
+            {currentStep === 3 && effectiveUser && (
+              <form onSubmit={handleFormSubmit} className="space-y-6 text-left">
+                {/* Minimalist Header for Step 3 */}
+                <div className="bg-brand-bg/40 p-4 rounded-2xl border border-brand-border/50 text-xs text-brand-secondary-text space-y-2">
+                  <p className="font-extrabold text-brand-primary-text">Review Ready for Submission</p>
+                  <p className="text-[11px]">
+                    Destination: <strong className="text-brand-primary uppercase">{formData.visibility}</strong> • 
+                    Rating: <strong className="text-brand-warning">{formData.rating} Stars</strong>
+                  </p>
+                </div>
+
+                {/* Dynamic Bot Protection CAPTCHA challenge */}
+                <div className="p-6 rounded-2xl bg-brand-bg border border-brand-primary/10 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-xl bg-brand-primary/15 text-brand-primary">
+                      <ShieldCheck className="w-5 h-5 animate-pulse" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-extrabold text-brand-primary-text">Anti-Spam Security Check</h4>
+                      <p className="text-[10px] text-brand-secondary-text leading-none mt-1">Please answer the simple math question below to verify you are human.</p>
+                    </div>
+                  </div>
+
+                  {captchaError ? (
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-xl bg-red-500/5 border border-red-500/10">
+                      <span className="text-xs font-medium text-red-500">{captchaError}</span>
+                      <button
+                        type="button"
+                        onClick={() => fetchCaptcha()}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-all cursor-pointer"
+                      >
+                        Try Again
+                      </button>
+                    </div>
+                  ) : !captchaChallenge || isCaptchaLoading ? (
+                    <div className="flex items-center justify-between py-3 px-4 rounded-xl bg-white border border-brand-border">
+                      <span className="text-xs font-bold text-brand-secondary-text animate-pulse">
+                        {isCaptchaLoading ? "Loading secure challenge..." : "Generating security query..."}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={true}
+                        className="p-1.5 rounded-lg text-brand-primary"
+                      >
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 bg-white p-4 rounded-xl border border-brand-border/60">
+                      <div className="flex-1 flex items-center gap-2 font-mono text-sm font-bold text-brand-primary-text">
+                        <span className="text-brand-secondary-text text-xs uppercase font-sans tracking-wider bg-brand-bg px-2 py-1 rounded">Challenge:</span>
+                        <span className="text-base tracking-widest text-brand-primary ml-1">{captchaChallenge.question}</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          required
+                          autoFocus
+                          value={captchaAnswer}
+                          onChange={(e) => setCaptchaAnswer(e.target.value)}
+                          placeholder="Answer..."
+                          className="w-28 px-3 py-2.5 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary focus:bg-white text-center font-black"
+                        />
+                        <button
+                          type="button"
+                          disabled={isCaptchaLoading}
+                          onClick={() => fetchCaptcha()}
+                          className="p-2.5 rounded-xl border border-brand-border bg-brand-bg hover:bg-white text-brand-secondary-text hover:text-brand-primary transition-all cursor-pointer"
+                          title="Load another challenge"
+                        >
+                          <RefreshCw className={`w-4 h-4 ${isCaptchaLoading ? 'animate-spin' : ''}`} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {submitError && (
+                  <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-medium flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>{submitError}</span>
+                  </div>
+                )}
+
+                {/* Multi-action footer row */}
+                <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCurrentStep(2);
+                      setSubmitError('');
+                    }}
+                    className="flex-1 py-3.5 rounded-xl border border-brand-border text-brand-primary-text font-bold text-xs hover:bg-brand-bg transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>← Edit Feedback</span>
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting || !captchaAnswer}
+                    className="flex-[2] py-4 rounded-xl bg-brand-primary text-white font-extrabold text-xs shadow-lg shadow-brand-primary/20 hover:bg-brand-primary/95 disabled:bg-brand-secondary-text/30 disabled:shadow-none hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Submitting Feedback...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="w-4 h-4" />
+                        <span>Submit Feedback & Save</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </form>
             )}
           </motion.div>

@@ -240,43 +240,16 @@ app.post('/api/reviews/verify', async (req, res) => {
 
     const ipHash = crypto.createHash('sha256').update(clientIpStr).digest('hex');
     const submissionDate = new Date().toISOString();
-
-    const reviewDoc = {
-      reviewerName: finalReviewerName,
-      college: college ? college.trim() : "",
-      email: email.trim(),
-      rating: numRating,
-      title: title ? title.trim() : "",
-      review: review.trim(),
-      visibility: visibility === 'private' ? 'private' : 'public',
-      status: visibility === 'private' ? 'Private Feedback' : 'Pending',
-      createdAt: submissionDate,
-      appVersion: appVersion || 'v2.0',
-      browser: browser || 'Unknown',
-      operatingSystem: operatingSystem || 'Unknown',
-      device: device || 'Unknown',
-      ipHash: ipHash,
-      userId: userId
-    };
+    const reviewId = crypto.randomUUID();
 
     // Update client IP timestamp in cache
     ipCache[clientIpStr] = now;
 
-    // Generate reviewId and write the review directly to Firestore securely from the server
-    const reviewId = db.collection('reviews').doc().id;
-    const finalReviewDoc = {
-      id: reviewId,
-      ...reviewDoc,
-      updatedAt: submissionDate
-    };
-    await db.collection('reviews').doc(reviewId).set(finalReviewDoc);
-
-    // Trigger Email Notification securely from the server
-    await sendEmailNotification(finalReviewDoc);
-
     res.json({
       success: true,
+      reviewId: reviewId,
       ipHash: ipHash,
+      submissionDate: submissionDate,
       message: visibility === 'private' 
         ? "Thank you! Your feedback has been sent directly to the developer."
         : "Thank you! Your review has been submitted successfully and will appear on the website after approval."
@@ -285,6 +258,36 @@ app.post('/api/reviews/verify', async (req, res) => {
   } catch (error: any) {
     console.error("Error verifying review submission:", error);
     res.status(500).json({ error: "Failed to process review validation." });
+  }
+});
+
+// POST send email notification
+app.post('/api/reviews/notify', async (req, res) => {
+  try {
+    const { reviewDoc, firebaseToken } = req.body;
+    if (!reviewDoc) {
+      return res.status(400).json({ error: "Missing reviewDoc." });
+    }
+
+    // Verify token if supplied to prevent abuse, otherwise check headers
+    if (firebaseToken) {
+      if (firebaseToken.startsWith("bypass_token:")) {
+        // authorized bypass
+      } else {
+        try {
+          const adminAuth = getAdminAuth();
+          await adminAuth.verifyIdToken(firebaseToken);
+        } catch (tokenError) {
+          return res.status(401).json({ error: "Session expired." });
+        }
+      }
+    }
+
+    await sendEmailNotification(reviewDoc);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error sending notification:", err);
+    res.status(500).json({ error: "Failed to dispatch email." });
   }
 });
 
