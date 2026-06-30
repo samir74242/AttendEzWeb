@@ -819,7 +819,7 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                         type="email"
                         value={directEmail}
                         onChange={(e) => setDirectEmail(e.target.value)}
-                        placeholder="e.g. raadwik74242@gmail.com"
+                        placeholder="e.g. admin@gmail.com"
                         required
                         disabled={isVerifying}
                         className="w-full pl-9 pr-4 py-3 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/60 transition-all disabled:opacity-50"
@@ -1243,9 +1243,9 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                           </tr>
 
                           <tr className="bg-brand-bg/10 hover:bg-brand-bg/30 transition-colors">
-                            <td className="py-3 px-4 font-bold flex items-center gap-1.5">
+                            <td className="py-3 px-4 font-bold flex items-center gap-1.5 text-brand-primary">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                              raadwik74242@gmail.com
+                              raad***@gmail.com
                             </td>
                             <td className="py-3 px-4">
                               <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-purple-50 text-purple-700 border border-purple-100 uppercase tracking-wide">

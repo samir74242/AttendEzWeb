@@ -62,7 +62,33 @@ export default function Testimonials() {
   
   // Google Authentication State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [customUser, setCustomUser] = useState<{
+    uid: string;
+    email: string;
+    displayName: string;
+    photoURL: string | null;
+    getIdToken: () => Promise<string>;
+    isBypass?: boolean;
+  } | null>(() => {
+    const saved = localStorage.getItem('attend_ez_demo_user');
+    if (saved) {
+      try {
+        const u = JSON.parse(saved);
+        return {
+          ...u,
+          getIdToken: async () => `bypass_token:${u.email}:${u.displayName}`
+        };
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  });
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  const [reviewLoginTab, setReviewLoginTab] = useState<'direct_email' | 'google'>('direct_email');
+  const [bypassEmailInput, setBypassEmailInput] = useState('');
+  const [bypassNameInput, setBypassNameInput] = useState('');
   
   // Public Approved Reviews State
   const [publicReviews, setPublicReviews] = useState<Review[]>([]);
@@ -104,26 +130,56 @@ export default function Testimonials() {
   const [adminVisibilityFilter, setAdminVisibilityFilter] = useState<string>('All');
   const [adminSortBy, setAdminSortBy] = useState<string>('newest');
 
+  // Combined active user
+  const effectiveUser = customUser || currentUser;
+
   // Listen to Auth State Changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setIsAuthLoading(false);
-      if (user) {
+      if (user && !customUser) {
         setFormData(prev => ({
           ...prev,
           name: prev.name || user.displayName || '',
           email: user.email || ''
         }));
-      } else {
-        setFormData(prev => ({
-          ...prev,
-          email: ''
-        }));
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [customUser]);
+
+  // Direct Email Bypass Sign-In Handler
+  const handleBypassSignIn = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitError('');
+    const email = bypassEmailInput.trim().toLowerCase();
+    if (!email) {
+      setSubmitError('Please enter a valid email address.');
+      return;
+    }
+
+    const name = bypassNameInput.trim();
+    const u = {
+      uid: `bypass-${email.replace(/[^a-zA-Z0-9]/g, '_')}`,
+      email: email,
+      displayName: name || email.split('@')[0],
+      photoURL: null,
+      isBypass: true
+    };
+
+    localStorage.setItem('attend_ez_demo_user', JSON.stringify(u));
+    setCustomUser({
+      ...u,
+      getIdToken: async () => `bypass_token:${u.email}:${u.displayName}`
+    });
+
+    setFormData(prev => ({
+      ...prev,
+      name: prev.name || u.displayName,
+      email: u.email
+    }));
+  };
 
   // Google Sign-In Handler
   const handleGoogleSignIn = async () => {
@@ -132,13 +188,26 @@ export default function Testimonials() {
       await signInWithPopup(auth, googleProvider);
     } catch (err: any) {
       console.error("Google Sign-In Error:", err);
-      setSubmitError(err.message || 'Failed to authenticate with Google. Please try again.');
+      if (err.message && err.message.includes("unauthorized-domain")) {
+        setSubmitError(
+          "Firebase Domain Error (auth/unauthorized-domain): Your Cloud Run domain has not been added to your Firebase project's Authorized Domains list. Under 'Authentication' > 'Settings' > 'Authorized Domains', please add your current dev and preview URL domains. Or, simply use the 'Direct Email ID' option on the left to sign in instantly!"
+        );
+      } else {
+        setSubmitError(err.message || 'Failed to authenticate with Google. Please try again.');
+      }
     }
   };
 
   const handleSignOut = async () => {
     try {
+      setCustomUser(null);
+      localStorage.removeItem('attend_ez_demo_user');
       await signOut(auth);
+      setFormData(prev => ({
+        ...prev,
+        name: '',
+        email: ''
+      }));
     } catch (err) {
       console.error("Sign-out error:", err);
     }
@@ -192,8 +261,8 @@ export default function Testimonials() {
     setSubmitError('');
     setIsSubmitting(true);
 
-    if (!currentUser) {
-      setSubmitError('Please sign in with Google to submit a review.');
+    if (!effectiveUser) {
+      setSubmitError('Please sign in to submit a review.');
       setIsSubmitting(false);
       return;
     }
@@ -215,7 +284,7 @@ export default function Testimonials() {
       try {
         const dupQuery = query(
           collection(db, 'reviews'),
-          where('userId', '==', currentUser.uid),
+          where('userId', '==', effectiveUser.uid),
           where('review', '==', formData.review.trim())
         );
         const dupSnapshot = await getDocs(dupQuery);
@@ -228,10 +297,10 @@ export default function Testimonials() {
         console.warn("Non-blocking duplicate check skipped:", dupErr);
       }
 
-      const token = await currentUser.getIdToken();
+      const token = await effectiveUser.getIdToken();
       const payload = {
         ...formData,
-        email: currentUser.email, // Always send the verified email from Auth
+        email: effectiveUser.email, // Always send the verified email from Auth
         firebaseToken: token,
         captchaId: captchaChallenge?.id,
         captchaAnswer: captchaAnswer,
@@ -255,13 +324,13 @@ export default function Testimonials() {
         // Safe to write directly to Firestore using client-side SDK (authorized by rules)
         const reviewId = doc(collection(db, 'reviews')).id;
         const submissionDate = new Date().toISOString();
-        const finalReviewerName = (formData.name && formData.name.trim()) || currentUser.displayName || "Google User";
+        const finalReviewerName = (formData.name && formData.name.trim()) || effectiveUser.displayName || "Student";
 
         const reviewDoc = {
           id: reviewId,
           reviewerName: finalReviewerName,
           college: formData.college ? formData.college.trim() : "",
-          email: currentUser.email,
+          email: effectiveUser.email,
           rating: Number(formData.rating),
           title: formData.title ? formData.title.trim() : "",
           review: formData.review.trim(),
@@ -274,7 +343,7 @@ export default function Testimonials() {
           operatingSystem: detectOS(),
           device: detectDevice(),
           ipHash: data.ipHash,
-          userId: currentUser.uid
+          userId: effectiveUser.uid
         };
 
         await setDoc(doc(db, 'reviews', reviewId), reviewDoc);
@@ -288,9 +357,9 @@ export default function Testimonials() {
         
         // Reset form but preserve verified credentials
         setFormData({
-          name: currentUser.displayName || '',
+          name: effectiveUser.displayName || '',
           college: '',
-          email: currentUser.email || '',
+          email: effectiveUser.email || '',
           rating: 5,
           title: '',
           review: '',
@@ -641,54 +710,132 @@ export default function Testimonials() {
               Share your honest feedback. Your review helps other students decide to try AttendEz and helps us improve!
             </p>
 
-            {!currentUser ? (
-              <div className="py-12 text-center space-y-6">
-                <div className="w-16 h-16 bg-brand-primary/5 text-brand-primary rounded-full flex items-center justify-center mx-auto border border-brand-primary/15 shadow-inner">
-                  <ShieldCheck className="w-8 h-8" />
-                </div>
-                <div className="max-w-md mx-auto space-y-3">
-                  <h4 className="text-lg font-bold text-brand-primary-text">Google Sign-In Required</h4>
-                  <p className="text-xs text-brand-secondary-text leading-relaxed">
-                    To maintain reviews of the highest integrity and ensure all feedback originates from real student accounts, we require authentication with Google.
-                  </p>
-                  <p className="text-[10px] text-brand-secondary-text/75 italic">
-                    We only verify your identity; your email address will never be shared publicly or sold.
-                  </p>
-                </div>
-
-                <div className="pt-2">
+            {!effectiveUser ? (
+              <div className="py-6 space-y-6">
+                {/* Switcher Tabs */}
+                <div className="flex bg-brand-bg p-1 rounded-xl max-w-sm mx-auto border border-brand-border/40 gap-1">
                   <button
                     type="button"
-                    onClick={handleGoogleSignIn}
-                    disabled={isAuthLoading}
-                    className="mx-auto flex items-center gap-3 px-6 py-3.5 rounded-xl border border-brand-border bg-white hover:bg-brand-bg text-brand-primary-text text-xs font-bold shadow-sm hover:shadow transition-all duration-200 active:scale-95 focus:outline-none"
+                    onClick={() => { setReviewLoginTab('direct_email'); setSubmitError(''); }}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                      reviewLoginTab === 'direct_email'
+                        ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
+                        : 'text-brand-secondary-text hover:text-brand-primary'
+                    }`}
                   >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24">
-                      <path
-                        fill="#4285F4"
-                        d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.9h6.6c-.28 1.5-.1.85-1.11 2.38l3.32 2.58c1.94-1.78 3.05-4.4 3.05-7.4c0-.28 0-.56-.05-.83z"
-                      />
-                      <path
-                        fill="#34A853"
-                        d="M12 24c3.24 0 5.97-1.08 7.96-2.9l-3.32-2.58c-1.13.76-2.58 1.21-4.64 1.21c-3.56 0-6.58-2.4-7.66-5.64L1.02 17.2C3.06 21.2 7.2 24 12 24z"
-                      />
-                      <path
-                        fill="#FBBC05"
-                        d="M4.34 14.09c-.27-.81-.43-1.68-.43-2.59c0-.91.16-1.78.43-2.59L1.02 6.32C.37 7.63 0 9.27 0 11c0 1.73.37 3.37 1.02 4.68l3.32-2.59z"
-                      />
-                      <path
-                        fill="#EA4335"
-                        d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.43-3.43C17.96 1.19 15.24 0 12 0C7.2 0 3.06 2.8 1.02 6.8l3.32 2.59c1.08-3.24 4.1-5.64 7.66-5.64z"
-                      />
-                    </svg>
-                    {isAuthLoading ? 'Connecting...' : 'Sign in with Google'}
+                    Direct Email ID
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setReviewLoginTab('google'); setSubmitError(''); }}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                      reviewLoginTab === 'google'
+                        ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
+                        : 'text-brand-secondary-text hover:text-brand-primary'
+                    }`}
+                  >
+                    Google Sign-In
                   </button>
                 </div>
 
+                {reviewLoginTab === 'direct_email' ? (
+                  <form onSubmit={handleBypassSignIn} className="max-w-md mx-auto space-y-4 text-left p-5 border border-brand-border/40 rounded-2xl bg-brand-bg/5 shadow-sm">
+                    <h4 className="text-sm font-black text-brand-primary-text mb-1 uppercase tracking-wider text-center">Quick Email Sign-In</h4>
+                    <p className="text-[10px] text-brand-secondary-text leading-relaxed mb-4 text-center">
+                      Type your email and your name to immediately sign in and submit your review. No popups or authorization domains required!
+                    </p>
+                    <div>
+                      <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                        Email Address <span className="text-red-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <Mail className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                        <input
+                          type="email"
+                          value={bypassEmailInput}
+                          onChange={(e) => setBypassEmailInput(e.target.value)}
+                          placeholder="e.g. student@gmail.com"
+                          required
+                          className="w-full pl-9 pr-4 py-3 rounded-xl border border-brand-border bg-white text-brand-primary-text text-xs focus:outline-none focus:border-brand-primary/60 transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                        Your Name / Alias <span className="text-brand-secondary-text/60 lowercase font-normal">(optional)</span>
+                      </label>
+                      <div className="relative">
+                        <Sparkles className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={bypassNameInput}
+                          onChange={(e) => setBypassNameInput(e.target.value)}
+                          placeholder="e.g. Sameer Pandey"
+                          className="w-full pl-9 pr-4 py-3 rounded-xl border border-brand-border bg-white text-brand-primary-text text-xs focus:outline-none focus:border-brand-primary/60 transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-3 mt-2 rounded-xl bg-brand-primary text-white font-bold text-xs shadow-md hover:bg-brand-primary/95 hover:shadow-brand-primary/15 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>Instantly Sign In & Continue</span>
+                    </button>
+                  </form>
+                ) : (
+                  <div className="text-center space-y-5">
+                    <div className="w-12 h-12 bg-brand-primary/5 text-brand-primary rounded-full flex items-center justify-center mx-auto border border-brand-primary/15 shadow-inner">
+                      <ShieldCheck className="w-6 h-6" />
+                    </div>
+                    <div className="max-w-md mx-auto space-y-2">
+                      <h4 className="text-base font-bold text-brand-primary-text">Google Sign-In</h4>
+                      <p className="text-xs text-brand-secondary-text leading-relaxed">
+                        Sign in with your Google Account to authorize and submit your review.
+                      </p>
+                      <p className="text-[10px] text-brand-secondary-text/75 italic">
+                        Your email address is confidential and is never shared publicly.
+                      </p>
+                    </div>
+
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={handleGoogleSignIn}
+                        disabled={isAuthLoading}
+                        className="mx-auto flex items-center gap-3 px-6 py-3 rounded-xl border border-brand-border bg-white hover:bg-brand-bg text-brand-primary-text text-xs font-bold shadow-sm hover:shadow transition-all duration-200 active:scale-95 focus:outline-none"
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24">
+                          <path
+                            fill="#4285F4"
+                            d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.9h6.6c-.28 1.5-.1.85-1.11 2.38l3.32 2.58c1.94-1.78 3.05-4.4 3.05-7.4c0-.28 0-.56-.05-.83z"
+                          />
+                          <path
+                            fill="#34A853"
+                            d="M12 24c3.24 0 5.97-1.08 7.96-2.9l-3.32-2.58c-1.13.76-2.58 1.21-4.64 1.21c-3.56 0-6.58-2.4-7.66-5.64L1.02 17.2C3.06 21.2 7.2 24 12 24z"
+                          />
+                          <path
+                            fill="#FBBC05"
+                            d="M4.34 14.09c-.27-.81-.43-1.68-.43-2.59c0-.91.16-1.78.43-2.59L1.02 6.32C.37 7.63 0 9.27 0 11c0 1.73.37 3.37 1.02 4.68l3.32-2.59z"
+                          />
+                          <path
+                            fill="#EA4335"
+                            d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.43-3.43C17.96 1.19 15.24 0 12 0C7.2 0 3.06 2.8 1.02 6.8l3.32 2.59c1.08-3.24 4.1-5.64 7.66-5.64z"
+                          />
+                        </svg>
+                        {isAuthLoading ? 'Connecting...' : 'Sign in with Google'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {submitError && (
-                  <p className="text-xs text-red-500 bg-red-50 p-3.5 rounded-xl border border-red-100 max-w-sm mx-auto">
-                    {submitError}
-                  </p>
+                  <div className="text-xs text-red-500 bg-red-50 p-4 rounded-xl border border-red-100 max-w-md mx-auto text-left space-y-1.5 leading-relaxed">
+                    <p className="font-bold">Authentication Alert:</p>
+                    <p>{submitError}</p>
+                  </div>
                 )}
               </div>
             ) : (
@@ -696,21 +843,21 @@ export default function Testimonials() {
                 {/* Authenticated user banner */}
                 <div className="flex items-center justify-between p-4 bg-brand-primary/5 border border-brand-primary/10 rounded-2xl mb-6">
                   <div className="flex items-center gap-3">
-                    {currentUser.photoURL ? (
+                    {effectiveUser.photoURL ? (
                       <img 
-                        src={currentUser.photoURL} 
-                        alt={currentUser.displayName || ''} 
+                        src={effectiveUser.photoURL} 
+                        alt={effectiveUser.displayName || ''} 
                         className="w-10 h-10 rounded-full border border-brand-primary/20" 
                         referrerPolicy="no-referrer" 
                       />
                     ) : (
                       <div className="w-10 h-10 rounded-full bg-brand-primary/10 text-brand-primary flex items-center justify-center font-bold text-sm">
-                        {(currentUser.displayName || 'U').charAt(0).toUpperCase()}
+                        {(effectiveUser.displayName || 'U').charAt(0).toUpperCase()}
                       </div>
                     )}
                     <div>
-                      <p className="text-xs font-bold text-brand-primary-text">{currentUser.displayName || 'Google Student'}</p>
-                      <p className="text-[10px] text-brand-secondary-text">{currentUser.email}</p>
+                      <p className="text-xs font-bold text-brand-primary-text">{effectiveUser.displayName || 'Student'}</p>
+                      <p className="text-[10px] text-brand-secondary-text">{effectiveUser.email}</p>
                     </div>
                   </div>
                   <button
@@ -755,12 +902,14 @@ export default function Testimonials() {
                 {/* Email Input with verified badge details */}
                 <div>
                   <label className="block text-xs font-bold text-brand-primary-text uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    Email Address <span className="text-brand-success text-[10px] lowercase font-normal flex items-center gap-0.5"><ShieldCheck className="w-3.5 h-3.5" /> verified via Google</span>
+                    Email Address <span className="text-brand-success text-[10px] lowercase font-normal flex items-center gap-0.5">
+                      <ShieldCheck className="w-3.5 h-3.5" /> verified via {effectiveUser.isBypass ? 'Direct Email' : 'Google'}
+                    </span>
                   </label>
                   <div className="relative">
                     <input
                       type="email"
-                      value={currentUser.email || ''}
+                      value={effectiveUser.email || ''}
                       disabled
                       className="w-full px-4 py-3 pl-10 rounded-xl border border-brand-border bg-brand-bg/40 text-brand-secondary-text text-sm cursor-not-allowed"
                     />
