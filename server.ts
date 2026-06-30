@@ -554,6 +554,12 @@ app.delete('/api/admin/reviews/:id', adminAuth, async (req, res) => {
   }
 });
 
+// ENDPOINT TO PROVIDE DOWNLOAD URL TO THE CLIENT
+app.get('/api/download-url', (req, res) => {
+  const apkUrl = process.env.DOWNLOAD_APK_URL || "https://github.com/samir74242/AttendEz/releases/download/v1.0.0/AttendEz.apk";
+  res.json({ url: apkUrl });
+});
+
 // CENTRALIZED DOWNLOAD ENDPOINT FOR APK
 app.all('/api/download', async (req, res) => {
   const apkUrl = process.env.DOWNLOAD_APK_URL || "https://github.com/samir74242/AttendEz/releases/download/v1.0.0/AttendEz.apk";

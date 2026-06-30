@@ -42,10 +42,24 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     setIsDownloading(true);
 
     try {
-      // Programmatic hidden anchor click for seamless download on current page
-      // This bypasses CORS completely by utilizing the native browser navigation/download behavior
+      // 1. Resolve download URL dynamically (falls back to direct GitHub release if API is unavailable, e.g., on static hosts like Vercel)
+      let downloadUrl = 'https://github.com/samir74242/AttendEz/releases/download/v1.0.0/AttendEz.apk';
+      try {
+        const res = await fetch('/api/download-url');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.url) {
+            downloadUrl = data.url;
+          }
+        }
+      } catch (e) {
+        console.warn('Could not fetch dynamic download URL from API, using default:', e);
+      }
+
+      // 2. Programmatic hidden anchor click targeting the direct secure storage URL
+      // This allows the browser to natively follow redirects and stream the full 20MB file
       const link = document.createElement('a');
-      link.href = '/api/download';
+      link.href = downloadUrl;
       link.setAttribute('download', 'AttendEz.apk');
       link.style.display = 'none';
       document.body.appendChild(link);
