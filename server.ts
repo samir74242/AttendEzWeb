@@ -558,18 +558,8 @@ app.all('/api/download', async (req, res) => {
   const apkUrl = process.env.DOWNLOAD_APK_URL || "https://github.com/samir74242/AttendEz/releases/download/v1.0.0/AttendEz.apk";
   
   if (req.method === 'HEAD') {
-    try {
-      const response = await fetch(apkUrl, { method: 'HEAD' });
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) {
-        res.setHeader('Content-Length', contentLength);
-      }
-      res.status(response.status).end();
-    } catch (e) {
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.status(200).end();
-    }
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.status(200).end();
     return;
   }
 
@@ -578,39 +568,9 @@ app.all('/api/download', async (req, res) => {
     return;
   }
 
-  try {
-    const response = await fetch(apkUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch APK from source: ${response.statusText}`);
-    }
-    
-    res.setHeader('Content-Disposition', 'attachment; filename="AttendEz.apk"');
-    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    
-    const contentLength = response.headers.get('content-length');
-    if (contentLength) {
-      res.setHeader('Content-Length', contentLength);
-    }
-    
-    if (response.body) {
-      const reader = response.body.getReader();
-      const pump = async () => {
-        const { done, value } = await reader.read();
-        if (done) {
-          res.end();
-          return;
-        }
-        res.write(Buffer.from(value));
-        await pump();
-      };
-      await pump();
-    } else {
-      throw new Error("Empty body from source URL");
-    }
-  } catch (error: any) {
-    console.error("Download proxy error, falling back to redirect:", error);
-    res.redirect(apkUrl);
-  }
+  // Redirect directly to the secure file storage.
+  // The browser will download it seamlessly on the current page without changing the address bar or navigating.
+  res.redirect(302, apkUrl);
 });
 
 

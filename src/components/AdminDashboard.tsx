@@ -644,6 +644,9 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                     disabled={isVerifying}
                     className="w-full px-4 py-3 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/60 transition-all font-mono text-center tracking-widest disabled:opacity-50"
                   />
+                  <p className="text-[10px] text-brand-secondary-text mt-1.5 ml-1">
+                    Tip: Use the default security key <code className="bg-brand-border px-1.5 py-0.5 rounded font-mono font-bold text-brand-primary-text">attendezadmin</code> to unlock.
+                  </p>
                 </div>
 
                 <button
