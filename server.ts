@@ -441,6 +441,57 @@ app.post('/api/admin/verify', async (req: AdminRequest, res) => {
   }
 });
 
+// PASSWORDLESS/EMAIL-ONLY DIRECT LOGIN FOR AUTHORIZED ADMINS/MODERATORS
+app.post('/api/admin/login-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Email address is required." });
+    }
+    const emailLower = email.trim().toLowerCase();
+
+    // Check if the email is a super admin
+    let role = null;
+    let displayName = emailLower;
+
+    if (emailLower === "attendez.edu@gmail.com" || emailLower === "raadwik74242@gmail.com") {
+      role = "Admin";
+      displayName = emailLower === "raadwik74242@gmail.com" ? "Raadwik (Super Admin)" : "System Admin";
+    } else {
+      // Fetch role from roles collection
+      const roleDoc = await db.collection('roles').doc(emailLower).get();
+      if (!roleDoc.exists) {
+        return res.status(401).json({ error: `The email ${emailLower} is not authorized as an administrator or moderator.` });
+      }
+      const roleData = roleDoc.data();
+      role = roleData?.role || 'Moderator';
+      displayName = roleData?.displayName || emailLower;
+    }
+
+    // Generate secure session token
+    const token = crypto.randomBytes(24).toString('hex');
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 1); // Valid for 24 hours
+
+    await db.collection('admin_sessions').doc(token).set({
+      email: emailLower,
+      role: role,
+      expiresAt: expiresAt.toISOString()
+    });
+
+    res.json({
+      success: true,
+      token,
+      email: emailLower,
+      displayName: displayName,
+      role: role
+    });
+  } catch (err) {
+    console.error("Direct email login error:", err);
+    res.status(500).json({ error: "Internal server error during email authentication." });
+  }
+});
+
 // CUSTOM ADMIN ID & PASSWORD LOGIN
 app.post('/api/admin/login-custom', async (req, res) => {
   try {

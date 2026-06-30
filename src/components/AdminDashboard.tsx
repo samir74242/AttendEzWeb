@@ -46,7 +46,9 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
   // Custom login states
+  const [loginTab, setLoginTab] = useState<'security_key' | 'email_login' | 'custom_admin'>('email_login');
   const [isCustomMode, setIsCustomMode] = useState(false);
+  const [directEmail, setDirectEmail] = useState('');
   const [customEmail, setCustomEmail] = useState('');
   const [customPassword, setCustomPassword] = useState('');
 
@@ -229,6 +231,43 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
     e.preventDefault();
     if (!adminPassword.trim()) return;
     verifyPassword(adminPassword.trim());
+  };
+
+  // Direct Email Access Login (No password/popups needed)
+  const handleDirectEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!directEmail.trim()) {
+      showToast('Please enter an email address.', 'error');
+      return;
+    }
+
+    setIsVerifying(true);
+    setAuthError('');
+    try {
+      const res = await fetch('/api/admin/login-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: directEmail.trim() })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setIsAdminAuthenticated(true);
+        setAuthMethod('custom');
+        setUserRole(data.role);
+        localStorage.setItem('attend_ez_session_token', data.token);
+        localStorage.setItem('attend_ez_admin_email', data.email);
+        localStorage.setItem('attend_ez_admin_role', data.role);
+        showToast(`Welcome back, ${data.displayName}!`, 'success');
+      } else {
+        const errorData = await res.json();
+        setAuthError(errorData.error || 'This email address is not authorized.');
+      }
+    } catch (err) {
+      setAuthError('Network error authenticating. Please try again.');
+    } finally {
+      setIsVerifying(false);
+    }
   };
 
   // Custom Admin Login using email/username and password
@@ -724,12 +763,23 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
               </p>
 
               {/* Login Method Tabs */}
-              <div className="flex bg-brand-bg p-1 rounded-xl mb-6 border border-brand-border/40">
+              <div className="flex bg-brand-bg p-1 rounded-xl mb-6 border border-brand-border/40 flex-wrap gap-1">
                 <button
                   type="button"
-                  onClick={() => { setIsCustomMode(false); setAuthError(''); }}
-                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
-                    !isCustomMode
+                  onClick={() => { setLoginTab('email_login'); setAuthError(''); }}
+                  className={`flex-1 min-w-[80px] py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all ${
+                    loginTab === 'email_login'
+                      ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
+                      : 'text-brand-secondary-text hover:text-brand-primary'
+                  }`}
+                >
+                  Direct Email ID
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setLoginTab('security_key'); setAuthError(''); }}
+                  className={`flex-1 min-w-[80px] py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all ${
+                    loginTab === 'security_key'
                       ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
                       : 'text-brand-secondary-text hover:text-brand-primary'
                   }`}
@@ -738,14 +788,14 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setIsCustomMode(true); setAuthError(''); }}
-                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
-                    isCustomMode
+                  onClick={() => { setLoginTab('custom_admin'); setAuthError(''); }}
+                  className={`flex-1 min-w-[80px] py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all ${
+                    loginTab === 'custom_admin'
                       ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
                       : 'text-brand-secondary-text hover:text-brand-primary'
                   }`}
                 >
-                  Custom Admin ID
+                  Custom ID/Pass
                 </button>
               </div>
 
@@ -756,8 +806,47 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                 </div>
               )}
 
-              {/* 1A. Security Key Authorization Form */}
-              {!isCustomMode ? (
+              {/* 1A. Direct Email ID Authorization Form (No passwords needed, checks role) */}
+              {loginTab === 'email_login' && (
+                <form onSubmit={handleDirectEmailLogin} className="space-y-4 text-left">
+                  <div>
+                    <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                      Authorized Email Address
+                    </label>
+                    <div className="relative">
+                      <Mail className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                      <input
+                        type="email"
+                        value={directEmail}
+                        onChange={(e) => setDirectEmail(e.target.value)}
+                        placeholder="e.g. raadwik74242@gmail.com"
+                        required
+                        disabled={isVerifying}
+                        className="w-full pl-9 pr-4 py-3 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/60 transition-all disabled:opacity-50"
+                      />
+                    </div>
+                    <p className="text-[10px] text-brand-secondary-text mt-1.5 ml-1">
+                      Type your email to instantly log in if you are an authorized administrator or moderator.
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isVerifying}
+                    className="w-full py-3.5 rounded-xl bg-brand-primary text-white font-bold text-sm shadow-md hover:bg-brand-primary/95 hover:shadow-brand-primary/15 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isVerifying ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Unlock className="w-4 h-4" />
+                    )}
+                    <span>Log In via Email ID</span>
+                  </button>
+                </form>
+              )}
+
+              {/* 1B. Security Key Authorization Form */}
+              {loginTab === 'security_key' && (
                 <form onSubmit={handlePasswordSubmit} className="space-y-4 text-left">
                   <div>
                     <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
@@ -790,8 +879,10 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                     <span>Unlock Admin Panel</span>
                   </button>
                 </form>
-              ) : (
-                /* 1B. Custom Admin ID & Password Form */
+              )}
+
+              {/* 1C. Custom Admin ID & Password Form */}
+              {loginTab === 'custom_admin' && (
                 <form onSubmit={handleCustomLogin} className="space-y-4 text-left">
                   <div>
                     <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
@@ -877,6 +968,10 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                 </svg>
                 <span>Log In with Google Admin</span>
               </button>
+
+              <p className="text-[10px] text-brand-secondary-text mt-3">
+                Note: Google Popups are often blocked in sandboxed preview iframes. Use the <strong>Direct Email ID</strong> option above for 100% reliable login!
+              </p>
             </motion.div>
           </div>
         ) : (
