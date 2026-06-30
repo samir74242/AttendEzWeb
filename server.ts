@@ -20,8 +20,9 @@ try {
 
 // Initialize Firebase Admin
 // Since we are running in AI Studio Cloud Run, we use the project ID from the configuration.
+let firebaseAdminApp: any;
 try {
-  admin.initializeApp({
+  firebaseAdminApp = admin.initializeApp({
     projectId: firebaseConfig.projectId || "moonlit-monolith-j5jvd",
   });
   console.log("Firebase Admin initialized successfully.");
@@ -29,7 +30,7 @@ try {
   console.error("Error initializing Firebase Admin:", error);
 }
 
-const db = getFirestore(firebaseConfig.firestoreDatabaseId || undefined);
+const db = getFirestore(firebaseAdminApp || undefined, firebaseConfig.firestoreDatabaseId || undefined);
 
 const app = express();
 app.use(express.json());
