@@ -321,33 +321,6 @@ export default function Testimonials() {
       const data = await res.json();
 
       if (res.ok) {
-        // Safe to write directly to Firestore using client-side SDK (authorized by rules)
-        const reviewId = doc(collection(db, 'reviews')).id;
-        const submissionDate = new Date().toISOString();
-        const finalReviewerName = (formData.name && formData.name.trim()) || effectiveUser.displayName || "Student";
-
-        const reviewDoc = {
-          id: reviewId,
-          reviewerName: finalReviewerName,
-          college: formData.college ? formData.college.trim() : "",
-          email: effectiveUser.email,
-          rating: Number(formData.rating),
-          title: formData.title ? formData.title.trim() : "",
-          review: formData.review.trim(),
-          visibility: formData.visibility,
-          status: formData.visibility === 'private' ? 'Private Feedback' : 'Pending',
-          createdAt: submissionDate,
-          updatedAt: submissionDate,
-          appVersion: 'v2.0',
-          browser: detectBrowser(),
-          operatingSystem: detectOS(),
-          device: detectDevice(),
-          ipHash: data.ipHash,
-          userId: effectiveUser.uid
-        };
-
-        await setDoc(doc(db, 'reviews', reviewId), reviewDoc);
-
         // Success dialog
         setSuccessDialog({
           isOpen: true,
@@ -367,6 +340,7 @@ export default function Testimonials() {
         });
         setCaptchaAnswer('');
         fetchCaptcha();
+        fetchPublicReviews(); // refresh listing in real-time
       } else {
         setSubmitError(data.error || 'Failed to submit review.');
       }
@@ -405,12 +379,16 @@ export default function Testimonials() {
   const fetchAdminReviews = async () => {
     setIsLoadingAdmin(true);
     try {
-      // Check the local cache of adminReviews or query directly if authorized as admin
-      const querySnapshot = await getDocs(collection(db, 'reviews'));
-      let reviews: Review[] = [];
-      querySnapshot.forEach(doc => {
-        reviews.push({ id: doc.id, ...doc.data() } as Review);
+      const res = await fetch('/api/admin/reviews', {
+        headers: {
+          'Authorization': adminPassword
+        }
       });
+      if (!res.ok) {
+        throw new Error('Failed to fetch reviews from server');
+      }
+      const data = await res.json();
+      let reviews: Review[] = data.reviews || [];
 
       // Filter in-memory
       if (adminStatusFilter !== 'All') {
@@ -436,7 +414,7 @@ export default function Testimonials() {
 
       setAdminReviews(reviews);
     } catch (err) {
-      console.error("Error loading admin reviews directly:", err);
+      console.error("Error loading admin reviews:", err);
       setAdminReviews([]);
     } finally {
       setIsLoadingAdmin(false);
@@ -453,13 +431,21 @@ export default function Testimonials() {
   // Update Review Status (Approve/Reject)
   const handleUpdateStatus = async (id: string, newStatus: 'Approved' | 'Rejected' | 'Pending') => {
     try {
-      const docRef = doc(db, 'reviews', id);
-      await updateDoc(docRef, { 
-        status: newStatus,
-        updatedAt: new Date().toISOString()
+      const res = await fetch(`/api/admin/reviews/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': adminPassword
+        },
+        body: JSON.stringify({ status: newStatus })
       });
-      fetchAdminReviews();
-      fetchPublicReviews(); // update landing page in real-time
+      if (res.ok) {
+        fetchAdminReviews();
+        fetchPublicReviews(); // update landing page in real-time
+      } else {
+        const errData = await res.json();
+        console.error("Error updating review status:", errData.error);
+      }
     } catch (err) {
       console.error("Error updating review:", err);
     }
@@ -471,10 +457,19 @@ export default function Testimonials() {
       return;
     }
     try {
-      const docRef = doc(db, 'reviews', id);
-      await deleteDoc(docRef);
-      fetchAdminReviews();
-      fetchPublicReviews();
+      const res = await fetch(`/api/admin/reviews/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': adminPassword
+        }
+      });
+      if (res.ok) {
+        fetchAdminReviews();
+        fetchPublicReviews();
+      } else {
+        const errData = await res.json();
+        console.error("Error deleting review:", errData.error);
+      }
     } catch (err) {
       console.error("Error deleting review:", err);
     }
