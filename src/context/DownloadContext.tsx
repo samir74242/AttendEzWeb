@@ -42,13 +42,8 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     setIsDownloading(true);
 
     try {
-      // 1. HEAD fetch to verify server/endpoint is active and healthy
-      const response = await fetch('/api/download', { method: 'HEAD' });
-      if (!response.ok) {
-        throw new Error('Download endpoint not responding correctly');
-      }
-
-      // 2. Programmatic hidden anchor click for seamless download on current page
+      // Programmatic hidden anchor click for seamless download on current page
+      // This bypasses CORS completely by utilizing the native browser navigation/download behavior
       const link = document.createElement('a');
       link.href = '/api/download';
       link.setAttribute('download', 'AttendEz.apk');
@@ -57,7 +52,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       link.click();
       document.body.removeChild(link);
 
-      // 3. Trigger success toast
+      // Trigger success toast
       showToast('success', '✅ Download started successfully.');
     } catch (error) {
       console.error('Programmatic download failed:', error);
