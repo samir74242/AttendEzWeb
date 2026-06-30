@@ -1,0 +1,122 @@
+{
+  "entities": {
+    "Role": {
+      "title": "Role",
+      "description": "User roles for admin or moderator access.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Email address of the authorized user."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["Admin", "Moderator"],
+          "description": "The security access role assigned to the user."
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Email of the administrator who added this role."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when this role was assigned."
+        }
+      },
+      "required": ["email", "role", "addedBy", "createdAt"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Student review and feedback submission.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique review ID."
+        },
+        "reviewerName": {
+          "type": "string",
+          "description": "Name of the reviewer."
+        },
+        "college": {
+          "type": "string",
+          "description": "College or university of the student."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Authenticated Google email of the reviewer."
+        },
+        "rating": {
+          "type": "integer",
+          "description": "Star rating from 1 to 5."
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the review."
+        },
+        "review": {
+          "type": "string",
+          "description": "Detailed body of the review."
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public", "private"],
+          "description": "Whether to publish publicly or send only to developer."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Pending", "Approved", "Rejected", "Private Feedback"],
+          "description": "Approval status of the review."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Date and time of submission."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Date and time of last update."
+        },
+        "appVersion": {
+          "type": "string",
+          "description": "Detected version of the application."
+        },
+        "browser": {
+          "type": "string",
+          "description": "Browser user submitted from."
+        },
+        "operatingSystem": {
+          "type": "string",
+          "description": "Operating system user submitted from."
+        },
+        "device": {
+          "type": "string",
+          "description": "Device type (Mobile/Desktop)."
+        },
+        "ipHash": {
+          "type": "string",
+          "description": "SHA-256 hash of client IP for rate limiting/duplicate detection."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Google UID of the authenticated reviewer."
+        }
+      },
+      "required": ["id", "reviewerName", "email", "rating", "review", "visibility", "status", "createdAt", "userId"]
+    }
+  },
+  "firestore": {
+    "roles/{email}": {
+      "schema": "Role",
+      "description": "Collection of designated administrator and moderator roles."
+    },
+    "reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Collection of all student reviews and private feedback."
+    }
+  }
+}

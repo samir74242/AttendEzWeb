@@ -1,0 +1,8 @@
+{
+  "name": "AttendEz",
+  "description": "Track Easily. Attend Smartly. A premium attendance tracking application designed for students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

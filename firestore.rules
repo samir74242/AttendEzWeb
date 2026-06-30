@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Developer bootstrapped administrator (always has super-admin rights)
+    function isSuperAdmin() {
+      return isSignedIn() 
+        && request.auth.token.email.lower() == 'attendez.edu@gmail.com';
+    }
+
+    // Checks if the user is the super-admin or has the Admin role stored in Firestore
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email.lower() == 'attendez.edu@gmail.com' ||
+        (
+          exists(/databases/$(database)/documents/roles/$(request.auth.token.email.lower())) &&
+          get(/databases/$(database)/documents/roles/$(request.auth.token.email.lower())).data.role == 'Admin'
+        )
+      );
+    }
+
+    // Checks if the user is the super-admin or has either Admin or Moderator role in Firestore
+    function isModeratorOrAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email.lower() == 'attendez.edu@gmail.com' ||
+        exists(/databases/$(database)/documents/roles/$(request.auth.token.email.lower()))
+      );
+    }
+
+    function isValidRole(data) {
+      return data.email is string && data.email.size() <= 128
+        && data.role is string && (data.role == 'Admin' || data.role == 'Moderator')
+        && data.addedBy is string && data.addedBy.size() <= 128
+        && data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    function isValidReview(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.reviewerName is string && data.reviewerName.size() <= 100
+        && data.college is string && data.college.size() <= 128
+        && data.email is string && data.email.size() <= 128
+        && (data.rating is int || data.rating is float) && data.rating >= 1 && data.rating <= 5
+        && data.title is string && data.title.size() <= 128
+        && data.review is string && data.review.size() <= 2000
+        && data.visibility is string && (data.visibility == 'public' || data.visibility == 'private')
+        && data.status is string && (data.status == 'Pending' || data.status == 'Private Feedback' || data.status == 'Approved' || data.status == 'Rejected')
+        && data.appVersion is string && data.appVersion.size() <= 20
+        && data.browser is string && data.browser.size() <= 100
+        && data.operatingSystem is string && data.operatingSystem.size() <= 100
+        && data.device is string && data.device.size() <= 50
+        && data.ipHash is string && data.ipHash.size() <= 128
+        && data.userId is string && data.userId.size() <= 128;
+    }
+
+    match /roles/{email} {
+      allow read: if isModeratorOrAdmin();
+      allow create, update: if isAdmin() && incoming().email.lower() == email.lower() && isValidRole(incoming());
+      allow delete: if isAdmin();
+    }
+
+    match /reviews/{reviewId} {
+      allow get: if isModeratorOrAdmin() || (existing().status == 'Approved' && existing().visibility == 'public') || (isSignedIn() && existing().userId == request.auth.uid);
+      allow list: if isModeratorOrAdmin() || (resource.data.status == 'Approved' && resource.data.visibility == 'public') || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isSignedIn() 
+        && isValidId(reviewId)
+        && isValidReview(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().email.lower() == request.auth.token.email.lower()
+        && (
+          (incoming().visibility == 'public' && incoming().status == 'Pending') ||
+          (incoming().visibility == 'private' && incoming().status == 'Private Feedback')
+        );
+
+      allow update: if isModeratorOrAdmin();
+      allow delete: if isModeratorOrAdmin();
+    }
+  }
+}

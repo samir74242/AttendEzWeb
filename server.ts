@@ -1,0 +1,578 @@
+import express from 'express';
+import path from 'path';
+import fs from 'fs';
+import { createServer as createViteServer } from 'vite';
+import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+
+// Load Firebase configuration
+let firebaseConfig: any = {};
+try {
+  const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+  firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+} catch (configError) {
+  console.error("Error reading firebase-applet-config.json:", configError);
+}
+
+// Initialize Firebase Admin
+// Since we are running in AI Studio Cloud Run, we use the project ID from the configuration.
+try {
+  admin.initializeApp({
+    projectId: firebaseConfig.projectId || "moonlit-monolith-j5jvd",
+  });
+  console.log("Firebase Admin initialized successfully.");
+} catch (error) {
+  console.error("Error initializing Firebase Admin:", error);
+}
+
+const db = getFirestore(firebaseConfig.firestoreDatabaseId || undefined);
+
+const app = express();
+app.use(express.json());
+
+const PORT = 3000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "attendezadmin";
+
+// Basic Rate Limiting cache
+const ipCache: { [key: string]: number } = {};
+const RATE_LIMIT_MS = 2 * 60 * 1000; // 2 minutes rate limit per IP
+
+// Profanity list for filtering
+const PROFANITY_WORDS = [
+  'fuck', 'shit', 'asshole', 'bitch', 'bastard', 'cunt', 'dick', 'pussy', 'whore', 'slut', 'crap'
+];
+
+function containsProfanity(text: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return PROFANITY_WORDS.some(word => lower.includes(word));
+}
+
+// Simple email sender helper using nodemailer
+async function sendEmailNotification(reviewData: any) {
+  const recipient = "attendez.edu@gmail.com";
+  const subject = `New AttendEz Review Submitted - [${reviewData.rating} Stars]`;
+  
+  const textContent = `
+New AttendEz Review Submitted
+
+Name: ${reviewData.reviewerName || "Anonymous"}
+College: ${reviewData.college || "Not Provided"}
+Email: ${reviewData.email || "Not Provided"}
+Rating: ${reviewData.rating} / 5 Stars
+Visibility: ${reviewData.visibility === 'public' ? 'Public Review (Pending Approval)' : 'Private Developer Feedback'}
+Review Title: ${reviewData.title || "Not Provided"}
+
+Review:
+${reviewData.review}
+
+Submission Time: ${reviewData.createdAt}
+Browser: ${reviewData.browser || "Unknown"}
+Operating System: ${reviewData.operatingSystem || "Unknown"}
+Device Type: ${reviewData.device || "Unknown"}
+App Version: ${reviewData.appVersion || "v2.0"}
+
+--------------------------------------------------
+This email indicates a ${reviewData.visibility === 'public' ? 'Public Review (Pending Approval)' : 'Private Developer Feedback'} submission.
+`;
+
+  // Create transporter dynamically using SMTP env vars, or fallback to console log
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = process.env.SMTP_PORT;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const smtpFrom = process.env.SMTP_FROM || "noreply@attendez.app";
+
+  if (smtpHost && smtpUser && smtpPass) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: parseInt(smtpPort || "587"),
+        secure: smtpPort === "465",
+        auth: {
+          user: smtpUser,
+          pass: smtpPass
+        }
+      });
+
+      await transporter.sendMail({
+        from: smtpFrom,
+        to: recipient,
+        subject: subject,
+        text: textContent,
+      });
+      console.log(`Email successfully sent to ${recipient}`);
+    } catch (err) {
+      console.error("Nodemailer failed to send email:", err);
+    }
+  } else {
+    console.log("==================================================");
+    console.log(`[SIMULATED EMAIL TO ${recipient}]`);
+    console.log(`Subject: ${subject}`);
+    console.log(textContent);
+    console.log("==================================================");
+  }
+}
+
+// Captcha challenge generator endpoint
+const captchaStore: { [key: string]: { answer: number; expires: number } } = {};
+
+app.get('/api/captcha', (req, res) => {
+  const id = crypto.randomUUID();
+  const num1 = Math.floor(Math.random() * 9) + 1;
+  const num2 = Math.floor(Math.random() * 9) + 1;
+  const operators = ['+', '-'];
+  const operator = operators[Math.floor(Math.random() * operators.length)];
+  
+  let answer = num1 + num2;
+  if (operator === '-') {
+    answer = num1 - num2;
+  }
+
+  captchaStore[id] = {
+    answer,
+    expires: Date.now() + 5 * 60 * 1000 // 5 mins expiry
+  };
+
+  res.json({
+    id,
+    question: `What is ${num1} ${operator} ${num2}?`
+  });
+});
+
+// GET active/approved reviews (simplified fallback - client reads directly from Firestore)
+app.get('/api/reviews', (req, res) => {
+  res.json({ reviews: [] });
+});
+
+// POST verify and notify review submission (replaces POST /api/reviews)
+app.post('/api/reviews/verify', async (req, res) => {
+  try {
+    const {
+      name,
+      college,
+      rating,
+      title,
+      review,
+      visibility, // 'public' | 'private'
+      captchaId,
+      captchaAnswer,
+      browser,
+      operatingSystem,
+      device,
+      appVersion,
+      firebaseToken
+    } = req.body;
+
+    // Google Authentication is strictly required to prevent email spoofing
+    if (!firebaseToken) {
+      return res.status(401).json({ error: "Google Authentication is required to submit a review." });
+    }
+
+    let decodedToken;
+    try {
+      const adminAuth = getAdminAuth();
+      decodedToken = await adminAuth.verifyIdToken(firebaseToken);
+    } catch (tokenError) {
+      return res.status(401).json({ error: "Your Google Authentication session has expired or is invalid. Please sign in again." });
+    }
+
+    const email = decodedToken.email;
+    const userId = decodedToken.uid;
+
+    if (!email) {
+      return res.status(400).json({ error: "Your Google account must have an email associated with it to post a review." });
+    }
+
+    const finalReviewerName = (name && name.trim()) || decodedToken.name || "Google User";
+
+    const clientIp = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
+    const clientIpStr = Array.isArray(clientIp) ? clientIp[0] : clientIp;
+
+    // 1. Basic Rate Limiting
+    const now = Date.now();
+    if (ipCache[clientIpStr] && now - ipCache[clientIpStr] < RATE_LIMIT_MS) {
+      return res.status(429).json({ error: "Too many submissions. Please wait 2 minutes before submitting again." });
+    }
+
+    // 2. Input Validation
+    if (!review || typeof review !== 'string' || review.trim().length === 0) {
+      return res.status(400).json({ error: "Review text is required." });
+    }
+    if (review.length > 2000) {
+      return res.status(400).json({ error: "Review cannot exceed 2000 characters." });
+    }
+    const numRating = Number(rating);
+    if (isNaN(numRating) || numRating < 1 || numRating > 5) {
+      return res.status(400).json({ error: "Rating must be an integer between 1 and 5." });
+    }
+
+    // 3. Captcha Bot Protection
+    const captcha = captchaStore[captchaId];
+    if (!captcha || captcha.expires < now) {
+      return res.status(400).json({ error: "Captcha expired or invalid. Please refresh and try again." });
+    }
+    if (Number(captchaAnswer) !== captcha.answer) {
+      return res.status(400).json({ error: "Incorrect Captcha answer. Please try again." });
+    }
+    delete captchaStore[captchaId]; // use once
+
+    // 4. Basic Profanity Filter
+    if (containsProfanity(title) || containsProfanity(review)) {
+      return res.status(400).json({ error: "Your review contains inappropriate language. Please modify it." });
+    }
+
+    const ipHash = crypto.createHash('sha256').update(clientIpStr).digest('hex');
+    const submissionDate = new Date().toISOString();
+
+    const reviewDoc = {
+      reviewerName: finalReviewerName,
+      college: college ? college.trim() : "",
+      email: email.trim(),
+      rating: numRating,
+      title: title ? title.trim() : "",
+      review: review.trim(),
+      visibility: visibility === 'private' ? 'private' : 'public',
+      status: visibility === 'private' ? 'Private Feedback' : 'Pending',
+      createdAt: submissionDate,
+      appVersion: appVersion || 'v2.0',
+      browser: browser || 'Unknown',
+      operatingSystem: operatingSystem || 'Unknown',
+      device: device || 'Unknown',
+      ipHash: ipHash,
+      userId: userId
+    };
+
+    // Update client IP timestamp in cache
+    ipCache[clientIpStr] = now;
+
+    // Trigger Email Notification securely from the server
+    await sendEmailNotification(reviewDoc);
+
+    res.json({
+      success: true,
+      ipHash: ipHash,
+      message: visibility === 'private' 
+        ? "Thank you! Your feedback has been sent directly to the developer."
+        : "Thank you! Your review has been submitted successfully and will appear on the website after approval."
+    });
+
+  } catch (error: any) {
+    console.error("Error verifying review submission:", error);
+    res.status(500).json({ error: "Failed to process review validation." });
+  }
+});
+
+// Define custom properties on Request
+interface AdminRequest extends express.Request {
+  adminUser?: {
+    email: string;
+    role: 'Admin' | 'Moderator';
+    isSuperAdmin: boolean;
+  };
+}
+
+// Admin Authorization Middleware (supports both API keys/passwords and Firebase JWT tokens)
+const adminAuth = async (req: AdminRequest, res: express.Response, next: express.NextFunction) => {
+  try {
+    const adminPasswordHeader = req.headers['x-admin-password'] || req.headers['authorization'];
+    
+    if (!adminPasswordHeader) {
+      return res.status(401).json({ error: "Authentication credentials required." });
+    }
+
+    const authHeaderStr = String(adminPasswordHeader).trim();
+
+    // 1. Password-based authentication
+    if (authHeaderStr === ADMIN_PASSWORD) {
+      req.adminUser = {
+        email: "attendez.edu@gmail.com",
+        role: "Admin",
+        isSuperAdmin: true
+      };
+      return next();
+    }
+
+    // 2. Google Firebase Token-based authentication
+    if (authHeaderStr.toLowerCase().startsWith("bearer ")) {
+      const token = authHeaderStr.substring(7);
+      try {
+        const authService = getAdminAuth();
+        const decodedToken = await authService.verifyIdToken(token);
+        const email = decodedToken.email?.toLowerCase();
+
+        if (!email) {
+          return res.status(401).json({ error: "No email address found in authentication credentials." });
+        }
+
+        // Super-admin bypass
+        if (email === "attendez.edu@gmail.com") {
+          req.adminUser = {
+            email: "attendez.edu@gmail.com",
+            role: "Admin",
+            isSuperAdmin: true
+          };
+          return next();
+        }
+
+        // Fetch user role from Firestore
+        const roleDoc = await db.collection('roles').doc(email).get();
+        if (!roleDoc.exists) {
+          return res.status(403).json({ error: `Unauthorized. ${email} is not registered as a moderator or administrator.` });
+        }
+
+        const roleData = roleDoc.data();
+        const userRole = roleData?.role;
+
+        if (userRole !== 'Admin' && userRole !== 'Moderator') {
+          return res.status(403).json({ error: "Access denied. Invalid system role assignment." });
+        }
+
+        req.adminUser = {
+          email,
+          role: userRole as 'Admin' | 'Moderator',
+          isSuperAdmin: false
+        };
+        return next();
+      } catch (tokenErr) {
+        console.error("Firebase Admin verifyIdToken error:", tokenErr);
+        return res.status(401).json({ error: "Invalid or expired administrator token." });
+      }
+    }
+
+    // Fallback matching raw password
+    if (authHeaderStr === ADMIN_PASSWORD) {
+      req.adminUser = {
+        email: "attendez.edu@gmail.com",
+        role: "Admin",
+        isSuperAdmin: true
+      };
+      return next();
+    }
+
+    return res.status(401).json({ error: "Unauthorized access credentials." });
+  } catch (err) {
+    console.error("Server adminAuth error:", err);
+    res.status(500).json({ error: "Internal server authentication error." });
+  }
+};
+
+// Admin role enforcement helper
+const requireAdminRoleOnly = (req: AdminRequest, res: express.Response, next: express.NextFunction) => {
+  if (!req.adminUser || req.adminUser.role !== 'Admin') {
+    return res.status(403).json({ error: "Access denied. Administrator privileges are required to perform this action." });
+  }
+  next();
+};
+
+// Check admin credentials
+app.post('/api/admin/verify', async (req: AdminRequest, res) => {
+  try {
+    const { password, firebaseToken } = req.body;
+
+    if (password) {
+      if (password === ADMIN_PASSWORD) {
+        return res.json({ success: true, email: 'attendez.edu@gmail.com', role: 'Admin' });
+      } else {
+        return res.status(401).json({ error: "Invalid administrator password." });
+      }
+    }
+
+    if (firebaseToken) {
+      try {
+        const authService = getAdminAuth();
+        const decodedToken = await authService.verifyIdToken(firebaseToken);
+        const email = decodedToken.email?.toLowerCase();
+
+        if (!email) {
+          return res.status(400).json({ error: "No email address found in Google Account." });
+        }
+
+        if (email === "attendez.edu@gmail.com") {
+          return res.json({ success: true, email, role: 'Admin' });
+        }
+
+        const roleDoc = await db.collection('roles').doc(email).get();
+        if (!roleDoc.exists) {
+          return res.status(403).json({ error: `Unauthorized. ${email} does not have administrative access.` });
+        }
+
+        const roleData = roleDoc.data();
+        return res.json({ success: true, email, role: roleData?.role });
+      } catch (err) {
+        return res.status(401).json({ error: "Expired or invalid Google Admin credentials." });
+      }
+    }
+
+    return res.status(400).json({ error: "Verification parameters are missing." });
+  } catch (error) {
+    console.error("Error in verify endpoint:", error);
+    res.status(500).json({ error: "Failed to verify admin status." });
+  }
+});
+
+// GET all reviews for Admin/Moderator
+app.get('/api/admin/reviews', adminAuth, async (req, res) => {
+  try {
+    const snapshot = await db.collection('reviews').get();
+    const reviews: any[] = [];
+    snapshot.forEach(doc => {
+      reviews.push({ id: doc.id, ...doc.data() });
+    });
+    // Sort by newest first by default
+    reviews.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    res.json({ reviews });
+  } catch (error: any) {
+    console.error("Error fetching admin reviews:", error);
+    res.status(500).json({ error: "Failed to fetch reviews." });
+  }
+});
+
+// GET all registered administrative roles
+app.get('/api/admin/roles', adminAuth, requireAdminRoleOnly, async (req, res) => {
+  try {
+    const snapshot = await db.collection('roles').get();
+    const roles: any[] = [];
+    snapshot.forEach(doc => {
+      roles.push({ id: doc.id, ...doc.data() });
+    });
+    res.json({ roles });
+  } catch (error: any) {
+    console.error("Error fetching admin roles:", error);
+    res.status(500).json({ error: "Failed to load admin and moderator roles." });
+  }
+});
+
+// CREATE / ADD dynamic administrative roles
+app.post('/api/admin/roles', adminAuth, requireAdminRoleOnly, async (req: AdminRequest, res) => {
+  try {
+    const { email, role } = req.body;
+
+    if (!email || !role || !['Admin', 'Moderator'].includes(role)) {
+      return res.status(400).json({ error: "Email address and valid role ('Admin' or 'Moderator') are required." });
+    }
+
+    const emailLower = email.trim().toLowerCase();
+
+    if (emailLower === 'attendez.edu@gmail.com') {
+      return res.status(400).json({ error: "The primary developer email is permanently a super-admin." });
+    }
+
+    const docRef = db.collection('roles').doc(emailLower);
+    
+    const roleData = {
+      email: emailLower,
+      role: role,
+      addedBy: req.adminUser?.email || "attendez.edu@gmail.com",
+      createdAt: new Date().toISOString()
+    };
+
+    await docRef.set(roleData);
+
+    res.json({ success: true, message: `Successfully registered ${emailLower} as ${role}.` });
+  } catch (error: any) {
+    console.error("Error creating admin role:", error);
+    res.status(500).json({ error: "Failed to assign administrative role." });
+  }
+});
+
+// DELETE administrative roles
+app.delete('/api/admin/roles/:email', adminAuth, requireAdminRoleOnly, async (req, res) => {
+  try {
+    const { email } = req.params;
+    const emailLower = email.trim().toLowerCase();
+
+    if (emailLower === 'attendez.edu@gmail.com') {
+      return res.status(400).json({ error: "Cannot delete the master super-administrator account." });
+    }
+
+    const docRef = db.collection('roles').doc(emailLower);
+    const docSnap = await docRef.get();
+
+    if (!docSnap.exists) {
+      return res.status(404).json({ error: "Assigned role not found." });
+    }
+
+    await docRef.delete();
+    res.json({ success: true, message: `Successfully revoked access for ${emailLower}.` });
+  } catch (error: any) {
+    console.error("Error deleting admin role:", error);
+    res.status(500).json({ error: "Failed to revoke administrative role." });
+  }
+});
+
+// UPDATE review status
+app.patch('/api/admin/reviews/:id', adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['Approved', 'Rejected', 'Pending', 'Private Feedback'].includes(status)) {
+      return res.status(400).json({ error: "Invalid status value." });
+    }
+
+    const docRef = db.collection('reviews').doc(id);
+    const docSnap = await docRef.get();
+
+    if (!docSnap.exists) {
+      return res.status(404).json({ error: "Review not found." });
+    }
+
+    const nowStr = new Date().toISOString();
+    await docRef.update({
+      status,
+      updatedAt: nowStr
+    });
+
+    res.json({ success: true, message: `Review status updated to ${status}.` });
+  } catch (error: any) {
+    console.error("Error updating review status:", error);
+    res.status(500).json({ error: "Failed to update review." });
+  }
+});
+
+// DELETE a review
+app.delete('/api/admin/reviews/:id', adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const docRef = db.collection('reviews').doc(id);
+    const docSnap = await docRef.get();
+
+    if (!docSnap.exists) {
+      return res.status(404).json({ error: "Review not found." });
+    }
+
+    await docRef.delete();
+    res.json({ success: true, message: "Review deleted successfully." });
+  } catch (error: any) {
+    console.error("Error deleting review:", error);
+    res.status(500).json({ error: "Failed to delete review." });
+  }
+});
+
+
+// Vite middleware integration
+async function startServer() {
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*all', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+startServer();
