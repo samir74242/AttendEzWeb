@@ -7,6 +7,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
+import { Readable } from 'stream';
 
 // Load Firebase configuration
 let firebaseConfig: any = {};
@@ -309,9 +310,9 @@ const adminAuth = async (req: AdminRequest, res: express.Response, next: express
         }
 
         // Super-admin bypass
-        if (email === "attendez.edu@gmail.com") {
+        if (email === "attendez.edu@gmail.com" || email === "raadwik74242@gmail.com") {
           req.adminUser = {
-            email: "attendez.edu@gmail.com",
+            email: email,
             role: "Admin",
             isSuperAdmin: true
           };
@@ -391,7 +392,7 @@ app.post('/api/admin/verify', async (req: AdminRequest, res) => {
           return res.status(400).json({ error: "No email address found in Google Account." });
         }
 
-        if (email === "attendez.edu@gmail.com") {
+        if (email === "attendez.edu@gmail.com" || email === "raadwik74242@gmail.com") {
           return res.json({ success: true, email, role: 'Admin' });
         }
 
@@ -457,7 +458,7 @@ app.post('/api/admin/roles', adminAuth, requireAdminRoleOnly, async (req: AdminR
 
     const emailLower = email.trim().toLowerCase();
 
-    if (emailLower === 'attendez.edu@gmail.com') {
+    if (emailLower === 'attendez.edu@gmail.com' || emailLower === 'raadwik74242@gmail.com') {
       return res.status(400).json({ error: "The primary developer email is permanently a super-admin." });
     }
 
@@ -485,7 +486,7 @@ app.delete('/api/admin/roles/:email', adminAuth, requireAdminRoleOnly, async (re
     const { email } = req.params;
     const emailLower = email.trim().toLowerCase();
 
-    if (emailLower === 'attendez.edu@gmail.com') {
+    if (emailLower === 'attendez.edu@gmail.com' || emailLower === 'raadwik74242@gmail.com') {
       return res.status(400).json({ error: "Cannot delete the master super-administrator account." });
     }
 
@@ -568,9 +569,29 @@ app.all('/api/download', async (req, res) => {
     return;
   }
 
-  // Redirect directly to the secure file storage.
-  // The browser will download it seamlessly on the current page without changing the address bar or navigating.
-  res.redirect(302, apkUrl);
+  try {
+    const response = await fetch(apkUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch APK from source: ${response.statusText}`);
+    }
+    
+    res.setHeader('Content-Disposition', 'attachment; filename="AttendEz.apk"');
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
+    }
+    
+    if (response.body) {
+      Readable.fromWeb(response.body as any).pipe(res);
+    } else {
+      throw new Error("Empty body from source URL");
+    }
+  } catch (error: any) {
+    console.error("Download proxy error, falling back to direct redirect:", error);
+    res.redirect(302, apkUrl);
+  }
 });
 
 

@@ -26,13 +26,14 @@ service cloud.firestore {
     // Developer bootstrapped administrator (always has super-admin rights)
     function isSuperAdmin() {
       return isSignedIn() 
-        && request.auth.token.email.lower() == 'attendez.edu@gmail.com';
+        && (request.auth.token.email.lower() == 'attendez.edu@gmail.com' || request.auth.token.email.lower() == 'raadwik74242@gmail.com');
     }
 
     // Checks if the user is the super-admin or has the Admin role stored in Firestore
     function isAdmin() {
       return isSignedIn() && (
         request.auth.token.email.lower() == 'attendez.edu@gmail.com' ||
+        request.auth.token.email.lower() == 'raadwik74242@gmail.com' ||
         (
           exists(/databases/$(database)/documents/roles/$(request.auth.token.email.lower())) &&
           get(/databases/$(database)/documents/roles/$(request.auth.token.email.lower())).data.role == 'Admin'
@@ -44,6 +45,7 @@ service cloud.firestore {
     function isModeratorOrAdmin() {
       return isSignedIn() && (
         request.auth.token.email.lower() == 'attendez.edu@gmail.com' ||
+        request.auth.token.email.lower() == 'raadwik74242@gmail.com' ||
         exists(/databases/$(database)/documents/roles/$(request.auth.token.email.lower()))
       );
     }

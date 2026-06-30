@@ -861,6 +861,23 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                             </td>
                           </tr>
 
+                          <tr className="bg-brand-bg/10 hover:bg-brand-bg/30 transition-colors">
+                            <td className="py-3 px-4 font-bold flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              raadwik74242@gmail.com
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-purple-50 text-purple-700 border border-purple-100 uppercase tracking-wide">
+                                Super Admin
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-brand-secondary-text font-mono text-[10px]">SYSTEM</td>
+                            <td className="py-3 px-4 text-brand-secondary-text font-mono text-[10px]">—</td>
+                            <td className="py-3 px-4 text-right">
+                              <span className="text-[10px] text-brand-secondary-text italic select-none">Permanent Access</span>
+                            </td>
+                          </tr>
+
                           {roles.map((r) => (
                             <tr key={r.email} className="hover:bg-brand-bg/20 transition-colors">
                               <td className="py-3.5 px-4 font-semibold">{r.email}</td>
