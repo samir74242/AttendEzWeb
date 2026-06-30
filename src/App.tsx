@@ -19,12 +19,12 @@ import AdminDashboard from './components/AdminDashboard';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'landing' | 'admin'>(() => {
-    return window.location.hash === '#admin' ? 'admin' : 'landing';
+    return window.location.hash === '#secret-admin-portal' ? 'admin' : 'landing';
   });
 
   useEffect(() => {
     const handleHashChange = () => {
-      if (window.location.hash === '#admin') {
+      if (window.location.hash === '#secret-admin-portal') {
         setCurrentView('admin');
       } else {
         setCurrentView('landing');

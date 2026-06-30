@@ -40,16 +40,28 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [userRole, setUserRole] = useState<'Admin' | 'Moderator' | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
-  const [authMethod, setAuthMethod] = useState<'none' | 'password' | 'google'>('none');
+  const [authMethod, setAuthMethod] = useState<'none' | 'password' | 'google' | 'custom'>('none');
   const [authError, setAuthError] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  // Custom login states
+  const [isCustomMode, setIsCustomMode] = useState(false);
+  const [customEmail, setCustomEmail] = useState('');
+  const [customPassword, setCustomPassword] = useState('');
+
+  // Custom role creation states
+  const [accessAddTab, setAccessAddTab] = useState<'google' | 'custom'>('google');
+  const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [newAdminDisplayName, setNewAdminDisplayName] = useState('');
+  const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [newAdminRole, setNewAdminRole] = useState<'Admin' | 'Moderator'>('Moderator');
 
   // Tabs / Screen selection
   const [activeTab, setActiveTab] = useState<'reviews' | 'roles'>('reviews');
 
   // Roles states
-  const [roles, setRoles] = useState<Array<{ id: string, email: string, role: 'Admin' | 'Moderator', addedBy: string, createdAt: string }>>([]);
+  const [roles, setRoles] = useState<Array<{ id: string, email: string, role: 'Admin' | 'Moderator', addedBy: string, createdAt: string, isCustomAdmin?: boolean }>>([]);
   const [isRolesLoading, setIsRolesLoading] = useState(false);
   const [newRoleEmail, setNewRoleEmail] = useState('');
   const [newRoleType, setNewRoleType] = useState<'Admin' | 'Moderator'>('Moderator');
@@ -73,6 +85,30 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
   // Toast notifications state
   const [toasts, setToasts] = useState<Toast[]>([]);
 
+  // Generate unified authentication headers for all server API requests
+  const getAuthHeaders = async (contentTypeJson = false) => {
+    const headers: Record<string, string> = {};
+    if (contentTypeJson) {
+      headers['Content-Type'] = 'application/json';
+    }
+    const sessionToken = localStorage.getItem('attend_ez_session_token');
+    const password = localStorage.getItem('attend_ez_admin_key') || adminPassword;
+    
+    if (sessionToken) {
+      headers['Authorization'] = `Bearer ${sessionToken}`;
+    } else if (password) {
+      headers['X-Admin-Password'] = password;
+    } else if (currentUser) {
+      try {
+        const token = await currentUser.getIdToken();
+        headers['Authorization'] = `Bearer ${token}`;
+      } catch (err) {
+        console.error("Error getting user ID token:", err);
+      }
+    }
+    return headers;
+  };
+
   // Track Firebase Auth state for Google Admin logins
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -91,18 +127,21 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
             setAuthMethod('google');
             setUserRole(data.role);
           } else {
-            // Not authorized, clear session
-            setIsAdminAuthenticated(false);
-            setUserRole(null);
-            setAuthMethod('none');
+            // Not authorized, clear session if currently on google auth
+            if (authMethod === 'google') {
+              setIsAdminAuthenticated(false);
+              setUserRole(null);
+              setAuthMethod('none');
+            }
           }
         } catch (err) {
           console.error("Auto login verify error:", err);
         }
       } else {
-        // If not authenticated via password, reset
+        // If not authenticated via custom or password, reset
         const savedPassword = localStorage.getItem('attend_ez_admin_key');
-        if (!savedPassword) {
+        const sessionToken = localStorage.getItem('attend_ez_session_token');
+        if (!savedPassword && !sessionToken && authMethod === 'google') {
           setIsAdminAuthenticated(false);
           setUserRole(null);
           setAuthMethod('none');
@@ -110,14 +149,43 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [authMethod]);
 
-  // Check LocalStorage on mount for password auth session
+  // Check LocalStorage on mount for custom session or password auth session
   useEffect(() => {
-    const savedPassword = localStorage.getItem('attend_ez_admin_key');
-    if (savedPassword) {
-      verifyPassword(savedPassword, true);
-    }
+    const checkAuth = async () => {
+      const sessionToken = localStorage.getItem('attend_ez_session_token');
+      if (sessionToken) {
+        setIsVerifying(true);
+        try {
+          const res = await fetch('/api/admin/roles', {
+            headers: { 'Authorization': `Bearer ${sessionToken}` }
+          });
+          if (res.ok) {
+            setIsAdminAuthenticated(true);
+            setAuthMethod('custom');
+            const storedRole = localStorage.getItem('attend_ez_admin_role') as 'Admin' | 'Moderator' || 'Admin';
+            setUserRole(storedRole);
+            setIsVerifying(false);
+            return;
+          } else {
+            localStorage.removeItem('attend_ez_session_token');
+            localStorage.removeItem('attend_ez_admin_email');
+            localStorage.removeItem('attend_ez_admin_role');
+          }
+        } catch (e) {
+          console.error("Custom session validation failed:", e);
+        } finally {
+          setIsVerifying(false);
+        }
+      }
+
+      const savedPassword = localStorage.getItem('attend_ez_admin_key');
+      if (savedPassword) {
+        verifyPassword(savedPassword, true);
+      }
+    };
+    checkAuth();
   }, []);
 
   // Show a visual Toast notification
@@ -163,6 +231,46 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
     verifyPassword(adminPassword.trim());
   };
 
+  // Custom Admin Login using email/username and password
+  const handleCustomLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customEmail.trim() || !customPassword.trim()) {
+      showToast('Please fill in both fields.', 'error');
+      return;
+    }
+
+    setIsVerifying(true);
+    setAuthError('');
+    try {
+      const res = await fetch('/api/admin/login-custom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: customEmail.trim(),
+          password: customPassword.trim()
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setIsAdminAuthenticated(true);
+        setAuthMethod('custom');
+        setUserRole(data.role);
+        localStorage.setItem('attend_ez_session_token', data.token);
+        localStorage.setItem('attend_ez_admin_email', data.email);
+        localStorage.setItem('attend_ez_admin_role', data.role);
+        showToast(`Welcome back, ${data.displayName}!`, 'success');
+      } else {
+        const errorData = await res.json();
+        setAuthError(errorData.error || 'Invalid administrator credentials.');
+      }
+    } catch (err) {
+      setAuthError('Network error authenticating. Please try again.');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
   // Google Sign-In as Admin
   const handleGoogleLogin = async () => {
     setIsVerifying(true);
@@ -204,6 +312,9 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
         await signOut(auth);
       }
       localStorage.removeItem('attend_ez_admin_key');
+      localStorage.removeItem('attend_ez_session_token');
+      localStorage.removeItem('attend_ez_admin_email');
+      localStorage.removeItem('attend_ez_admin_role');
       setIsAdminAuthenticated(false);
       setAuthMethod('none');
       setUserRole(null);
@@ -220,16 +331,8 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
   const fetchRoles = async () => {
     if (userRole !== 'Admin') return;
     setIsRolesLoading(true);
-    const password = localStorage.getItem('attend_ez_admin_key') || adminPassword;
     try {
-      const headers: Record<string, string> = {};
-      if (password) {
-        headers['X-Admin-Password'] = password;
-      } else if (currentUser) {
-        const token = await currentUser.getIdToken();
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/admin/roles', { headers });
       if (res.ok) {
         const data = await res.json();
@@ -252,25 +355,15 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
     }
   }, [isAdminAuthenticated, userRole]);
 
-  // Create and add new administrative roles
+  // Create and add new administrative roles (Google sign-in)
   const handleAddRole = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRoleEmail.trim()) return;
 
     const emailToSubmit = newRoleEmail.trim().toLowerCase();
-    const password = localStorage.getItem('attend_ez_admin_key') || adminPassword;
     
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json'
-      };
-      if (password) {
-        headers['X-Admin-Password'] = password;
-      } else if (currentUser) {
-        const token = await currentUser.getIdToken();
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
+      const headers = await getAuthHeaders(true);
       const res = await fetch('/api/admin/roles', {
         method: 'POST',
         headers,
@@ -290,18 +383,46 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
     }
   };
 
+  // Create custom password-authenticated admin or moderator account
+  const handleCreateCustomAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAdminEmail.trim() || !newAdminDisplayName.trim() || !newAdminPassword.trim()) {
+      showToast('Please fill in all custom admin fields.', 'error');
+      return;
+    }
+
+    try {
+      const headers = await getAuthHeaders(true);
+      const res = await fetch('/api/admin/create-custom-account', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          email: newAdminEmail.trim().toLowerCase(),
+          displayName: newAdminDisplayName.trim(),
+          password: newAdminPassword.trim(),
+          role: newAdminRole
+        })
+      });
+
+      if (res.ok) {
+        showToast(`Successfully registered custom ${newAdminRole} account`, 'success');
+        setNewAdminEmail('');
+        setNewAdminDisplayName('');
+        setNewAdminPassword('');
+        fetchRoles(); // Refresh roles list
+      } else {
+        const errData = await res.json();
+        showToast(errData.error || 'Failed to register custom admin account.', 'error');
+      }
+    } catch (err) {
+      showToast('Error registering custom admin account.', 'error');
+    }
+  };
+
   // Revoke / Delete existing administrative roles
   const handleDeleteRole = async (emailToDelete: string) => {
-    const password = localStorage.getItem('attend_ez_admin_key') || adminPassword;
     try {
-      const headers: Record<string, string> = {};
-      if (password) {
-        headers['X-Admin-Password'] = password;
-      } else if (currentUser) {
-        const token = await currentUser.getIdToken();
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/admin/roles/${encodeURIComponent(emailToDelete)}`, {
         method: 'DELETE',
         headers
@@ -323,16 +444,8 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
   // Fetch reviews from the backend using authorization header or user credentials
   const fetchReviews = async () => {
     setIsLoading(true);
-    const password = localStorage.getItem('attend_ez_admin_key') || adminPassword;
     try {
-      const headers: Record<string, string> = {};
-      if (password) {
-        headers['X-Admin-Password'] = password;
-      } else if (currentUser) {
-        const token = await currentUser.getIdToken();
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/admin/reviews', { headers });
       if (res.ok) {
         const data = await res.json();
@@ -358,15 +471,8 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
 
   // Update Review Status via Backend API
   const handleUpdateStatus = async (id: string, newStatus: string) => {
-    const password = localStorage.getItem('attend_ez_admin_key') || adminPassword;
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json'
-      };
-      if (password) {
-        headers['X-Admin-Password'] = password;
-      }
-
+      const headers = await getAuthHeaders(true);
       const res = await fetch(`/api/admin/reviews/${id}`, {
         method: 'PATCH',
         headers,
@@ -388,13 +494,8 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
 
   // Delete Review via Backend API
   const handleDeleteReview = async (id: string) => {
-    const password = localStorage.getItem('attend_ez_admin_key') || adminPassword;
     try {
-      const headers: Record<string, string> = {};
-      if (password) {
-        headers['X-Admin-Password'] = password;
-      }
-
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/admin/reviews/${id}`, {
         method: 'DELETE',
         headers
@@ -587,7 +688,7 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
             <div className="flex items-center gap-3">
               <span className="text-xs font-mono text-brand-secondary-text bg-white border border-brand-border/60 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Verified: {authMethod === 'google' ? 'Google Admin' : 'Access Password'}</span>
+                <span>Verified: {authMethod === 'google' ? 'Google Admin' : authMethod === 'custom' ? 'Custom Admin' : 'Access Password'}</span>
               </span>
               <button
                 onClick={handleLogout}
@@ -618,9 +719,35 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
               <h2 className="font-display text-xl font-extrabold text-brand-primary-text mb-2">
                 Administrator Authentication
               </h2>
-              <p className="text-xs text-brand-secondary-text mb-8">
-                Enter the master password or log in with verified administrator credentials to access review moderation, user analytics, and private developer feedback.
+              <p className="text-xs text-brand-secondary-text mb-6">
+                Authenticate to access review moderation, user analytics, and private developer feedback.
               </p>
+
+              {/* Login Method Tabs */}
+              <div className="flex bg-brand-bg p-1 rounded-xl mb-6 border border-brand-border/40">
+                <button
+                  type="button"
+                  onClick={() => { setIsCustomMode(false); setAuthError(''); }}
+                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                    !isCustomMode
+                      ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
+                      : 'text-brand-secondary-text hover:text-brand-primary'
+                  }`}
+                >
+                  Security Key
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsCustomMode(true); setAuthError(''); }}
+                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                    isCustomMode
+                      ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
+                      : 'text-brand-secondary-text hover:text-brand-primary'
+                  }`}
+                >
+                  Custom Admin ID
+                </button>
+              </div>
 
               {authError && (
                 <div className="p-3 mb-5 rounded-xl bg-rose-50 border border-rose-100 text-xs font-semibold text-rose-700 flex items-center gap-2 justify-center">
@@ -629,39 +756,93 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                 </div>
               )}
 
-              {/* Password Authorization Form */}
-              <form onSubmit={handlePasswordSubmit} className="space-y-4 text-left">
-                <div>
-                  <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
-                    Security Key
-                  </label>
-                  <input
-                    type="password"
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    placeholder="••••••••••••••••"
-                    required
-                    disabled={isVerifying}
-                    className="w-full px-4 py-3 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/60 transition-all font-mono text-center tracking-widest disabled:opacity-50"
-                  />
-                  <p className="text-[10px] text-brand-secondary-text mt-1.5 ml-1">
-                    Tip: Use the default security key <code className="bg-brand-border px-1.5 py-0.5 rounded font-mono font-bold text-brand-primary-text">attendezadmin</code> to unlock.
-                  </p>
-                </div>
+              {/* 1A. Security Key Authorization Form */}
+              {!isCustomMode ? (
+                <form onSubmit={handlePasswordSubmit} className="space-y-4 text-left">
+                  <div>
+                    <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                      Security Key
+                    </label>
+                    <input
+                      type="password"
+                      value={adminPassword}
+                      onChange={(e) => setAdminPassword(e.target.value)}
+                      placeholder="••••••••••••••••"
+                      required
+                      disabled={isVerifying}
+                      className="w-full px-4 py-3 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/60 transition-all font-mono text-center tracking-widest disabled:opacity-50"
+                    />
+                    <p className="text-[10px] text-brand-secondary-text mt-1.5 ml-1">
+                      Tip: Use the default security key <code className="bg-brand-border px-1.5 py-0.5 rounded font-mono font-bold text-brand-primary-text">attendezadmin</code> to unlock.
+                    </p>
+                  </div>
 
-                <button
-                  type="submit"
-                  disabled={isVerifying}
-                  className="w-full py-3.5 rounded-xl bg-brand-primary text-white font-bold text-sm shadow-md hover:bg-brand-primary/95 hover:shadow-brand-primary/15 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
-                >
-                  {isVerifying && authMethod === 'none' ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Unlock className="w-4 h-4" />
-                  )}
-                  <span>Unlock Admin Panel</span>
-                </button>
-              </form>
+                  <button
+                    type="submit"
+                    disabled={isVerifying}
+                    className="w-full py-3.5 rounded-xl bg-brand-primary text-white font-bold text-sm shadow-md hover:bg-brand-primary/95 hover:shadow-brand-primary/15 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isVerifying ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Unlock className="w-4 h-4" />
+                    )}
+                    <span>Unlock Admin Panel</span>
+                  </button>
+                </form>
+              ) : (
+                /* 1B. Custom Admin ID & Password Form */
+                <form onSubmit={handleCustomLogin} className="space-y-4 text-left">
+                  <div>
+                    <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                      Administrator Email / ID
+                    </label>
+                    <div className="relative">
+                      <Mail className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                      <input
+                        type="email"
+                        value={customEmail}
+                        onChange={(e) => setCustomEmail(e.target.value)}
+                        placeholder="admin@attendez.edu"
+                        required
+                        disabled={isVerifying}
+                        className="w-full pl-9 pr-4 py-3 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/60 transition-all disabled:opacity-50"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                      Secure Password
+                    </label>
+                    <div className="relative">
+                      <Key className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                      <input
+                        type="password"
+                        value={customPassword}
+                        onChange={(e) => setCustomPassword(e.target.value)}
+                        placeholder="••••••••"
+                        required
+                        disabled={isVerifying}
+                        className="w-full pl-9 pr-4 py-3 rounded-xl border border-brand-border bg-brand-bg text-brand-primary-text text-sm focus:outline-none focus:border-brand-primary/60 transition-all disabled:opacity-50"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isVerifying}
+                    className="w-full py-3.5 rounded-xl bg-brand-primary text-white font-bold text-sm shadow-md hover:bg-brand-primary/95 hover:shadow-brand-primary/15 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isVerifying ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Unlock className="w-4 h-4" />
+                    )}
+                    <span>Verify Custom Credentials</span>
+                  </button>
+                </form>
+              )}
 
               {/* Visual Divider */}
               <div className="flex items-center my-6">
@@ -754,50 +935,155 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
                     <UserPlus className="w-4 h-4 text-brand-primary" />
                     Add Authorized Account
                   </h3>
-                  <p className="text-xs text-brand-secondary-text mb-6">
-                    Grant administrative or moderation access to any Google-authenticated user.
+                  <p className="text-xs text-brand-secondary-text mb-4">
+                    Grant administrative or moderation access to a user.
                   </p>
 
-                  <form onSubmit={handleAddRole} className="space-y-4">
-                    <div>
-                      <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
-                        Google Email Address
-                      </label>
-                      <div className="relative">
-                        <Mail className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
-                        <input
-                          type="email"
-                          required
-                          value={newRoleEmail}
-                          onChange={(e) => setNewRoleEmail(e.target.value)}
-                          placeholder="e.g. moderator@gmail.com"
-                          className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-brand-border/80 bg-brand-bg text-brand-primary-text text-xs focus:outline-none focus:border-brand-primary/40 transition-colors"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
-                        Access Authority Level
-                      </label>
-                      <select
-                        value={newRoleType}
-                        onChange={(e) => setNewRoleType(e.target.value as 'Admin' | 'Moderator')}
-                        className="w-full px-3 py-2.5 rounded-xl border border-brand-border/80 bg-white text-brand-primary-text text-xs font-semibold focus:outline-none focus:border-brand-primary/40 transition-colors"
-                      >
-                        <option value="Moderator">Moderator (Can review & moderate)</option>
-                        <option value="Admin">Administrator (Can manage roles & reviews)</option>
-                      </select>
-                    </div>
-
+                  {/* Sub-tab Switcher inside creation card */}
+                  <div className="flex bg-brand-bg p-1 rounded-xl mb-4 border border-brand-border/40">
                     <button
-                      type="submit"
-                      className="w-full py-3 rounded-xl bg-brand-primary text-white font-bold text-xs shadow-md hover:bg-brand-primary/95 transition-all flex items-center justify-center gap-2"
+                      type="button"
+                      onClick={() => setAccessAddTab('google')}
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
+                        accessAddTab === 'google'
+                          ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
+                          : 'text-brand-secondary-text hover:text-brand-primary'
+                      }`}
                     >
-                      <UserPlus className="w-3.5 h-3.5" />
-                      Grant Platform Access
+                      Google Sign-In Email
                     </button>
-                  </form>
+                    <button
+                      type="button"
+                      onClick={() => setAccessAddTab('custom')}
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
+                        accessAddTab === 'custom'
+                          ? 'bg-white text-brand-primary shadow-sm border border-brand-border/40'
+                          : 'text-brand-secondary-text hover:text-brand-primary'
+                      }`}
+                    >
+                      Custom ID + Pass
+                    </button>
+                  </div>
+
+                  {accessAddTab === 'google' ? (
+                    /* Google-authenticated email registration */
+                    <form onSubmit={handleAddRole} className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                          Google Email Address
+                        </label>
+                        <div className="relative">
+                          <Mail className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                          <input
+                            type="email"
+                            required
+                            value={newRoleEmail}
+                            onChange={(e) => setNewRoleEmail(e.target.value)}
+                            placeholder="e.g. moderator@gmail.com"
+                            className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-brand-border/80 bg-brand-bg text-brand-primary-text text-xs focus:outline-none focus:border-brand-primary/40 transition-colors"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                          Access Authority Level
+                        </label>
+                        <select
+                          value={newRoleType}
+                          onChange={(e) => setNewRoleType(e.target.value as 'Admin' | 'Moderator')}
+                          className="w-full px-3 py-2.5 rounded-xl border border-brand-border/80 bg-white text-brand-primary-text text-xs font-semibold focus:outline-none focus:border-brand-primary/40 transition-colors"
+                        >
+                          <option value="Moderator">Moderator (Can review & moderate)</option>
+                          <option value="Admin">Administrator (Can manage roles & reviews)</option>
+                        </select>
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full py-3 rounded-xl bg-brand-primary text-white font-bold text-xs shadow-md hover:bg-brand-primary/95 transition-all flex items-center justify-center gap-2"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        Grant Platform Access
+                      </button>
+                    </form>
+                  ) : (
+                    /* Custom credentials creation */
+                    <form onSubmit={handleCreateCustomAdmin} className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                          Admin Email / Username
+                        </label>
+                        <div className="relative">
+                          <Mail className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                          <input
+                            type="email"
+                            required
+                            value={newAdminEmail}
+                            onChange={(e) => setNewAdminEmail(e.target.value)}
+                            placeholder="e.g. team@attendez.edu"
+                            className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-brand-border/80 bg-brand-bg text-brand-primary-text text-xs focus:outline-none focus:border-brand-primary/40 transition-colors"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                          Display Name
+                        </label>
+                        <div className="relative">
+                          <Check className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                          <input
+                            type="text"
+                            required
+                            value={newAdminDisplayName}
+                            onChange={(e) => setNewAdminDisplayName(e.target.value)}
+                            placeholder="e.g. Sarah Connor"
+                            className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-brand-border/80 bg-brand-bg text-brand-primary-text text-xs focus:outline-none focus:border-brand-primary/40 transition-colors"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                          Admin Password
+                        </label>
+                        <div className="relative">
+                          <Key className="w-3.5 h-3.5 text-brand-secondary-text absolute left-3 top-1/2 transform -translate-y-1/2" />
+                          <input
+                            type="password"
+                            required
+                            value={newAdminPassword}
+                            onChange={(e) => setNewAdminPassword(e.target.value)}
+                            placeholder="••••••••"
+                            className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-brand-border/80 bg-brand-bg text-brand-primary-text text-xs focus:outline-none focus:border-brand-primary/40 transition-colors font-mono tracking-widest"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-brand-primary-text uppercase tracking-widest mb-1.5 ml-1">
+                          Access Authority Level
+                        </label>
+                        <select
+                          value={newAdminRole}
+                          onChange={(e) => setNewAdminRole(e.target.value as 'Admin' | 'Moderator')}
+                          className="w-full px-3 py-2.5 rounded-xl border border-brand-border/80 bg-white text-brand-primary-text text-xs font-semibold focus:outline-none focus:border-brand-primary/40 transition-colors"
+                        >
+                          <option value="Moderator">Moderator (Can review & moderate)</option>
+                          <option value="Admin">Administrator (Can manage roles & reviews)</option>
+                        </select>
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full py-3 rounded-xl bg-brand-primary text-white font-bold text-xs shadow-md hover:bg-brand-primary/95 transition-all flex items-center justify-center gap-2"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        Create Admin ID
+                      </button>
+                    </form>
+                  )}
                 </div>
 
                 {/* Roles Table/List */}
@@ -880,7 +1166,14 @@ export default function AdminDashboard({ onClose }: { onClose?: () => void }) {
 
                           {roles.map((r) => (
                             <tr key={r.email} className="hover:bg-brand-bg/20 transition-colors">
-                              <td className="py-3.5 px-4 font-semibold">{r.email}</td>
+                              <td className="py-3.5 px-4 font-semibold flex items-center gap-2 flex-wrap">
+                                <span>{r.email}</span>
+                                {r.isCustomAdmin && (
+                                  <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-indigo-50 text-indigo-600 border border-indigo-100 uppercase tracking-widest leading-none">
+                                    ID/Pass
+                                  </span>
+                                )}
+                              </td>
                               <td className="py-3.5 px-4">
                                 <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${
                                   r.role === 'Admin' 

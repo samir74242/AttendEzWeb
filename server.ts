@@ -267,6 +267,11 @@ app.post('/api/reviews/verify', async (req, res) => {
   }
 });
 
+// Password hashing helper using crypto
+function hashPassword(password: string, salt: string): string {
+  return crypto.createHmac('sha256', salt).update(password).digest('hex');
+}
+
 // Define custom properties on Request
 interface AdminRequest extends express.Request {
   adminUser?: {
@@ -276,7 +281,7 @@ interface AdminRequest extends express.Request {
   };
 }
 
-// Admin Authorization Middleware (supports both API keys/passwords and Firebase JWT tokens)
+// Admin Authorization Middleware (supports both API keys/passwords, custom sessions, and Firebase JWT tokens)
 const adminAuth = async (req: AdminRequest, res: express.Response, next: express.NextFunction) => {
   try {
     const adminPasswordHeader = req.headers['x-admin-password'] || req.headers['authorization'];
@@ -297,9 +302,30 @@ const adminAuth = async (req: AdminRequest, res: express.Response, next: express
       return next();
     }
 
-    // 2. Google Firebase Token-based authentication
+    // 2. Custom Admin Session-based authentication or Firebase token check
     if (authHeaderStr.toLowerCase().startsWith("bearer ")) {
       const token = authHeaderStr.substring(7);
+
+      // Check custom session database first
+      try {
+        const sessionDoc = await db.collection('admin_sessions').doc(token).get();
+        if (sessionDoc.exists) {
+          const sessionData = sessionDoc.data();
+          const expiresAt = sessionData?.expiresAt ? new Date(sessionData.expiresAt) : new Date(0);
+          if (expiresAt > new Date()) {
+            req.adminUser = {
+              email: sessionData?.email,
+              role: sessionData?.role || 'Admin',
+              isSuperAdmin: sessionData?.email === "attendez.edu@gmail.com" || sessionData?.email === "raadwik74242@gmail.com"
+            };
+            return next();
+          }
+        }
+      } catch (sessionErr) {
+        console.error("Custom session verify error:", sessionErr);
+      }
+
+      // Fallback to Google Firebase Token-based authentication
       try {
         const authService = getAdminAuth();
         const decodedToken = await authService.verifyIdToken(token);
@@ -415,6 +441,97 @@ app.post('/api/admin/verify', async (req: AdminRequest, res) => {
   }
 });
 
+// CUSTOM ADMIN ID & PASSWORD LOGIN
+app.post('/api/admin/login-custom', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email/ID and Password are required." });
+    }
+    const emailLower = email.trim().toLowerCase();
+    const adminDoc = await db.collection('custom_admins').doc(emailLower).get();
+    if (!adminDoc.exists) {
+      return res.status(401).json({ error: "Invalid admin credentials." });
+    }
+    const adminData = adminDoc.data();
+    const calculatedHash = hashPassword(password, adminData?.salt);
+    if (calculatedHash !== adminData?.passwordHash) {
+      return res.status(401).json({ error: "Invalid admin credentials." });
+    }
+    
+    // Generate secure session token
+    const token = crypto.randomBytes(24).toString('hex');
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 1); // Valid for 24 hours
+    
+    await db.collection('admin_sessions').doc(token).set({
+      email: emailLower,
+      role: adminData?.role || 'Admin',
+      expiresAt: expiresAt.toISOString()
+    });
+    
+    res.json({
+      success: true,
+      token,
+      email: emailLower,
+      displayName: adminData?.displayName || emailLower,
+      role: adminData?.role || 'Admin'
+    });
+  } catch (err) {
+    console.error("Custom admin login error:", err);
+    res.status(500).json({ error: "Internal server error during custom admin login." });
+  }
+});
+
+// CREATE / REGISTER CUSTOM PASSWORD-BASED ADMIN OR MODERATOR
+app.post('/api/admin/create-custom-account', adminAuth, requireAdminRoleOnly, async (req: AdminRequest, res) => {
+  try {
+    const { email, displayName, password, role } = req.body;
+    if (!email || !displayName || !password || !role) {
+      return res.status(400).json({ error: "Email/ID, Display Name, Password, and Role are required." });
+    }
+    if (!['Admin', 'Moderator'].includes(role)) {
+      return res.status(400).json({ error: "Invalid role level. Must be 'Admin' or 'Moderator'." });
+    }
+    const emailLower = email.trim().toLowerCase();
+    
+    // Check if role/email already exists
+    const roleSnap = await db.collection('roles').doc(emailLower).get();
+    if (roleSnap.exists) {
+      return res.status(400).json({ error: "An account with this email/ID already exists." });
+    }
+    
+    // Salt and Hash password securely
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = hashPassword(password, salt);
+    
+    // Save to custom_admins
+    await db.collection('custom_admins').doc(emailLower).set({
+      email: emailLower,
+      displayName,
+      salt,
+      passwordHash,
+      role,
+      createdAt: new Date().toISOString()
+    });
+    
+    // Save to roles
+    await db.collection('roles').doc(emailLower).set({
+      email: emailLower,
+      role,
+      displayName,
+      addedBy: req.adminUser?.email || "attendez.edu@gmail.com",
+      createdAt: new Date().toISOString(),
+      isCustomAdmin: true
+    });
+    
+    res.json({ success: true, message: `Successfully registered custom ${role} account: ${emailLower}` });
+  } catch (err) {
+    console.error("Error creating custom admin account:", err);
+    res.status(500).json({ error: "Failed to create custom admin account." });
+  }
+});
+
 // GET all reviews for Admin/Moderator
 app.get('/api/admin/reviews', adminAuth, async (req, res) => {
   try {
@@ -498,6 +615,14 @@ app.delete('/api/admin/roles/:email', adminAuth, requireAdminRoleOnly, async (re
     }
 
     await docRef.delete();
+    
+    // Also delete from custom_admins if exists
+    try {
+      await db.collection('custom_admins').doc(emailLower).delete();
+    } catch (customDelErr) {
+      console.error("Error cascading delete to custom_admins:", customDelErr);
+    }
+
     res.json({ success: true, message: `Successfully revoked access for ${emailLower}.` });
   } catch (error: any) {
     console.error("Error deleting admin role:", error);

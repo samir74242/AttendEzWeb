@@ -485,7 +485,7 @@ export default function Testimonials() {
           {/* Hidden Admin Moderator access hook */}
           <div className="absolute -top-4 right-0">
             <button 
-              onClick={() => { window.location.hash = '#admin'; }}
+              onClick={() => { window.location.hash = '#secret-admin-portal'; }}
               className="p-2 rounded-xl text-brand-secondary-text/40 hover:text-brand-primary hover:bg-brand-primary/5 transition-all text-xs flex items-center gap-1.5 font-mono"
               title="Administrator Panel"
               id="admin-moderator-btn"
