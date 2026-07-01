@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import Navbar from './components/Navbar';
 import Hero from './components/Hero';
 import Trust from './components/Trust';
@@ -41,7 +42,12 @@ export default function App() {
   };
 
   if (currentView === 'admin') {
-    return <AdminDashboard onClose={handleCloseAdmin} />;
+    return (
+      <>
+        <AdminDashboard onClose={handleCloseAdmin} />
+        <Analytics />
+      </>
+    );
   }
 
   return (
@@ -80,6 +86,9 @@ export default function App() {
 
       {/* Brand Footer with Sameer Pandey's Signature */}
       <Footer />
+      
+      {/* Vercel Web Analytics */}
+      <Analytics />
     </div>
   );
 }
